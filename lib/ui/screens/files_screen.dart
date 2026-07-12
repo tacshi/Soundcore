@@ -58,7 +58,8 @@ class _FilesBodyState extends State<FilesBody>
   Widget build(BuildContext context) {
     final c = context.watch<RecorderController>();
     final exporting = c.isExporting || c.needsWifiJoin;
-    final busy = c.phase == AppPhase.busy || exporting;
+    final busy =
+        c.phase == AppPhase.busy || exporting || c.downloadingFileId != null;
     final localPaths = c.exportedPaths.toList();
     final localCount = c.exportedPaths.length;
     final deviceCount = c.files.length;
@@ -167,34 +168,41 @@ class _LocalExportsTabState extends State<_LocalExportsTab> {
 
   Future<void> _saveSelected(BuildContext context) async {
     if (_selected.isEmpty || _saving) return;
-    final destination = await getDirectoryPath(
-      confirmButtonText: '保存到这里',
-      canCreateDirectories: true,
-    );
-    if (destination == null || !context.mounted) return;
-
     setState(() => _saving = true);
-    final result = await context.read<RecorderController>().saveLocalCopies(
-      _selected,
-      destination,
-    );
-    if (!context.mounted) return;
-    setState(() {
-      _saving = false;
-      if (result.failed.isEmpty) {
-        _selecting = false;
-        _selected.clear();
-      }
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          result.failed.isEmpty
-              ? '已保存 ${result.audios} 个录音和 ${result.transcripts} 份转写'
-              : '已保存 ${result.audios} 个录音，${result.failed.length} 个失败',
+    try {
+      final paths = await context
+          .read<RecorderController>()
+          .prepareLocalSharePaths(_selected);
+      if (!context.mounted) return;
+      if (paths.isEmpty) throw StateError('所选文件不存在');
+
+      final box = context.findRenderObject() as RenderBox?;
+      final origin = box == null
+          ? null
+          : box.localToGlobal(Offset.zero) & box.size;
+      final result = await SharePlus.instance.share(
+        ShareParams(
+          files: paths.map(XFile.new).toList(),
+          title: '保存或分享录音',
+          subject: '录音导出',
+          sharePositionOrigin: origin,
         ),
-      ),
-    );
+      );
+      if (!mounted) return;
+      if (result.status == ShareResultStatus.success) {
+        setState(() {
+          _selecting = false;
+          _selected.clear();
+        });
+      }
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('无法打开分享菜单：$error')));
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   Future<void> _deleteSelected(BuildContext context) async {
@@ -525,15 +533,19 @@ class _DeviceFilesTab extends StatelessWidget {
                     final f = c.files[i];
                     final selected = c.selectedFileIds.contains(f.fileId);
                     final hasLocal = c.localPathFor(f.fileId) != null;
+                    final downloading = c.downloadingFileId == f.fileId;
                     return _DeviceFileTile(
                       file: f,
                       selecting: c.selecting,
                       selected: selected,
                       hasLocal: hasLocal,
+                      downloading: downloading,
                       onTap: c.selecting
                           ? () => c.toggleFileSelected(f.fileId)
                           : null,
-                      onExport: busy ? null : () => c.downloadFileOverBle(f),
+                      onExport: busy || hasLocal
+                          ? null
+                          : () => c.downloadFileOverBle(f),
                       onDelete: busy ? null : () => c.deleteFile(f.fileId),
                     );
                   },
@@ -1423,6 +1435,7 @@ class _DeviceFileTile extends StatelessWidget {
     required this.selecting,
     required this.selected,
     required this.hasLocal,
+    required this.downloading,
     this.onTap,
     this.onExport,
     this.onDelete,
@@ -1432,6 +1445,7 @@ class _DeviceFileTile extends StatelessWidget {
   final bool selecting;
   final bool selected;
   final bool hasLocal;
+  final bool downloading;
   final VoidCallback? onTap;
   final VoidCallback? onExport;
   final VoidCallback? onDelete;
@@ -1491,9 +1505,26 @@ class _DeviceFileTile extends StatelessWidget {
           ),
           if (!selecting) ...[
             IconButton(
-              tooltip: '通过蓝牙下载',
+              tooltip: hasLocal
+                  ? '已下载'
+                  : downloading
+                  ? '正在下载'
+                  : '通过蓝牙下载',
               onPressed: onExport,
-              icon: const Icon(Icons.download_rounded, color: AppColors.mint),
+              icon: downloading
+                  ? const SizedBox.square(
+                      dimension: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
+                        color: AppColors.mint,
+                      ),
+                    )
+                  : Icon(
+                      hasLocal
+                          ? Icons.download_done_rounded
+                          : Icons.download_rounded,
+                      color: hasLocal ? AppColors.textMuted : AppColors.mint,
+                    ),
             ),
             IconButton(
               tooltip: '在设备上删除',

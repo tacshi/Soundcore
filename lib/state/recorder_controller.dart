@@ -927,6 +927,9 @@ class RecorderController extends ChangeNotifier {
   /// fileId → local path after Wi‑Fi export.
   final Map<int, String> localPathsByFileId = {};
 
+  /// Device file currently being downloaded on demand over BLE.
+  int? downloadingFileId;
+
   /// path → last STT text for that local export.
   final Map<String, String> transcriptsByPath = {};
 
@@ -1633,16 +1636,18 @@ class RecorderController extends ChangeNotifier {
     if (isWifiExportSession || isExporting) return;
     if (phase == AppPhase.connecting || phase == AppPhase.busy) return;
 
-    await _yieldBacklogToCurrentRecording();
-    if (!encryptReady) await establishEncryptSession();
-    if (!connected || !_ble.isConnected) return;
-
-    phase = AppPhase.busy;
+    downloadingFileId = file.fileId;
     errorMessage = null;
     statusMessage = '正在下载 ${file.title}…';
     notifyListeners();
     var lastProgressAt = DateTime.fromMillisecondsSinceEpoch(0);
     try {
+      await _yieldBacklogToCurrentRecording();
+      if (!encryptReady) await establishEncryptSession();
+      if (!connected || !_ble.isConnected) return;
+
+      phase = AppPhase.busy;
+      notifyListeners();
       final rawPath = await _blePull.pullFile(
         file,
         onProgress: (received, expected) {
@@ -1668,6 +1673,7 @@ class RecorderController extends ChangeNotifier {
       errorMessage = '下载失败：$e';
       statusMessage = '下载失败';
     } finally {
+      downloadingFileId = null;
       phase = connected ? AppPhase.ready : AppPhase.idle;
       notifyListeners();
     }
@@ -1778,6 +1784,31 @@ class RecorderController extends ChangeNotifier {
     errorMessage = failed.isEmpty ? null : failed.join('\n');
     notifyListeners();
     return (audios: audios, transcripts: transcripts, failed: failed);
+  }
+
+  /// Materialize the selected recordings and transcript sidecars for the
+  /// platform share sheet (AirDrop, Save to Files, and other apps on iOS).
+  Future<List<String>> prepareLocalSharePaths(Iterable<String> paths) async {
+    final result = <String>[];
+    final sidecarDir = Directory(
+      p.join(Directory.systemTemp.path, 'AnkerRecorder', 'share'),
+    );
+    await sidecarDir.create(recursive: true);
+
+    for (final path in paths.toSet()) {
+      final audio = File(path);
+      if (!await audio.exists()) continue;
+      result.add(path);
+
+      final transcript = transcriptForPath(path)?.trim();
+      if (transcript == null || transcript.isEmpty) continue;
+      final name = p.basename(path);
+      final stem = name.replaceFirst(RegExp(r'\.(?:wav|opus(?:\.bin)?)$'), '');
+      final sidecar = File(p.join(sidecarDir.path, '$stem.txt'));
+      await sidecar.writeAsString(normalizeSttText(transcript), flush: true);
+      result.add(sidecar.path);
+    }
+    return result;
   }
 
   Future<({int deleted, List<String> failed})> deleteLocalExports(
