@@ -22,7 +22,6 @@ import '../crypto/device_crypto.dart';
 import '../protocol/commands.dart';
 import '../protocol/frame.dart';
 import '../protocol/models.dart';
-import '../ota/firmware_ota_service.dart';
 import '../wifi/wifi_export_service.dart';
 import 'app_settings_store.dart';
 import 'device_store.dart';
@@ -124,7 +123,6 @@ class RecorderController extends ChangeNotifier {
       write: _ble.writeCommand,
       crypto: _crypto,
     );
-    _ota = FirmwareOtaService(_ble);
     _subs.add(
       _wifi.progress.listen((p) {
         exportProgress = p;
@@ -132,26 +130,6 @@ class RecorderController extends ChangeNotifier {
       }),
     );
     _subs.add(_realtime.stateStream.listen(_onRealtimeState));
-    _subs.add(
-      _ota.states.listen((state) {
-        otaState = state;
-        if (state.active) {
-          phase = AppPhase.busy;
-          statusMessage = state.message;
-        } else {
-          phase = connected ? AppPhase.ready : AppPhase.idle;
-          statusMessage = state.message.isEmpty
-              ? statusMessage
-              : state.error == null
-              ? state.message
-              : '${state.message}：${state.error}';
-          if (state.phase == FirmwareOtaPhase.failed) {
-            errorMessage = state.error;
-          }
-        }
-        notifyListeners();
-      }),
-    );
     _wirePlayer();
     unawaited(_loadPersistedSettings());
     unawaited(_loadPersistedDevice());
@@ -859,8 +837,6 @@ class RecorderController extends ChangeNotifier {
   int _lastSttBytes = 0;
 
   Completer<bool>? _encryptCompleter;
-  late final FirmwareOtaService _ota;
-
   AppPhase phase = AppPhase.idle;
   bool connected = false;
   List<ScannedDevice> devices = [];
@@ -872,9 +848,6 @@ class RecorderController extends ChangeNotifier {
   bool recording = false;
   bool bound = false;
   ScannedDevice? activeDevice;
-
-  FirmwareOtaState otaState = const FirmwareOtaState();
-  bool get otaSupported => _ble.supportsOta;
 
   /// Survives disconnect so the Device tab can still show a known/bound unit.
   ScannedDevice? lastKnownDevice;
@@ -1097,11 +1070,6 @@ class RecorderController extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
-    if (otaState.active) {
-      errorMessage = '固件更新期间不能断开设备';
-      notifyListeners();
-      return;
-    }
     _stopBatteryPoll();
     await _wifi.cancel();
     await stopPlayback();
@@ -1232,8 +1200,6 @@ class RecorderController extends ChangeNotifier {
   }
 
   Future<void> syncTime() => _send(DeviceCommands.syncTime(), label: '正在同步时钟…');
-
-  void cancelFirmwareUpdate() => _ota.cancel();
 
   Future<void> startRecord() async {
     await _yieldBacklogToCurrentRecording();
@@ -1430,7 +1396,7 @@ class RecorderController extends ChangeNotifier {
     if (_autoTransferRunning || !autoRealtime) return;
     if (!connected || !_ble.isConnected || files.isEmpty) return;
     if (recording || info?.recording == true || realtimeState.active) return;
-    if (isWifiExportSession || isExporting || otaState.active) return;
+    if (isWifiExportSession || isExporting) return;
     if (phase == AppPhase.connecting || phase == AppPhase.busy) return;
 
     _autoTransferRunning = true;
@@ -2157,7 +2123,6 @@ class RecorderController extends ChangeNotifier {
     _xaiStt.dispose();
     _sonioxStt.dispose();
     _wifi.dispose();
-    unawaited(_ota.dispose());
     _ble.dispose();
     super.dispose();
   }

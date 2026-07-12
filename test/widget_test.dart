@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets('app boots to home shell', (tester) async {
-    await tester.pumpWidget(const AnkerRecorderApp());
+    await tester.pumpWidget(const SoundcoreManagerApp());
     // Primary tab is Home (files / live), with bottom nav.
     expect(find.text('录音'), findsWidgets);
     expect(find.text('首页'), findsOneWidget);

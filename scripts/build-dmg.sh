@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Release-build Anker Recorder for macOS and package a .dmg with hdiutil.
+# Release-build Soundcore Manager for macOS and package a .dmg with hdiutil.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-APP_NAME="anker_recorder"
-DISPLAY_NAME="Anker Recorder"
-RELEASE_APP="build/macos/Build/Products/Release/${APP_NAME}.app"
+APP_NAME="soundcore-manager"
+DISPLAY_NAME="Soundcore Manager"
+RELEASE_APP="build/macos/Build/Products/Release/${DISPLAY_NAME}.app"
 DIST_DIR="${ROOT}/dist"
 VERSION="$(
   # pubspec: version: 1.0.0+1 → 1.0.0
@@ -23,7 +23,7 @@ usage() {
   cat <<'EOF'
 Usage: scripts/build-dmg.sh [options]
 
-  Release-build Anker Recorder for macOS and create a compressed DMG.
+  Release-build Soundcore Manager for macOS and create a compressed DMG.
 
 Options:
   --skip-build   Reuse existing Release .app (do not flutter build)
@@ -31,7 +31,7 @@ Options:
   -h, --help     Show this help
 
 Output:
-  dist/anker_recorder-<version>-macos.dmg
+  dist/soundcore-manager-<version>-macos.dmg
 EOF
 }
 

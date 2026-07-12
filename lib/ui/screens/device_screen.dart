@@ -19,8 +19,6 @@ class DeviceScreen extends StatelessWidget {
     final info = c.info;
     final micBat = info?.battery;
     final caseBat = info?.boxBattery;
-    final ota = c.otaState;
-
     return GradientScaffold(
       appBar: AppBar(
         title: Row(
@@ -70,7 +68,7 @@ class DeviceScreen extends StatelessWidget {
           ),
           IconButton(
             tooltip: '断开连接',
-            onPressed: ota.active ? null : c.disconnect,
+            onPressed: c.disconnect,
             icon: const Icon(Icons.link_off_rounded, color: AppColors.coral),
           ),
         ],
@@ -151,13 +149,11 @@ class DeviceScreen extends StatelessWidget {
                         : '—',
                   ),
                   const Divider(),
-                  _FirmwareVersionRow(
-                    currentVersion: info?.firmwareVersion.isNotEmpty == true
+                  _DeviceInfoRow(
+                    label: '固件版本',
+                    value: info?.firmwareVersion.isNotEmpty == true
                         ? info!.firmwareVersion
                         : '—',
-                    // No remote firmware catalog is configured yet.
-                    availableVersion: null,
-                    onUpdate: null,
                   ),
                   const Divider(),
                   _DeviceInfoRow(label: '存储', value: info?.storageLabel ?? '—'),
@@ -326,77 +322,6 @@ class DeviceScreen extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _FirmwareVersionRow extends StatelessWidget {
-  const _FirmwareVersionRow({
-    required this.currentVersion,
-    this.availableVersion,
-    this.onUpdate,
-  });
-
-  final String currentVersion;
-  final String? availableVersion;
-  final VoidCallback? onUpdate;
-
-  @override
-  Widget build(BuildContext context) {
-    final remoteVersion = availableVersion?.trim();
-    final hasRemoteUpdate = remoteVersion != null && remoteVersion.isNotEmpty;
-    final versionLabel = hasRemoteUpdate
-        ? '$currentVersion ($remoteVersion)'
-        : currentVersion;
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        children: [
-          const Expanded(
-            child: Text(
-              '固件版本',
-              style: TextStyle(
-                color: AppColors.textMuted,
-                fontSize: 13,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ),
-          Expanded(
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    versionLabel,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                    minimumSize: const Size(68, 36),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 8,
-                    ),
-                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  onPressed: hasRemoteUpdate ? onUpdate : null,
-                  child: const Text('更新'),
-                ),
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }

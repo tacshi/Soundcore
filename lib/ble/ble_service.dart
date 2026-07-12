@@ -20,16 +20,13 @@ class BleService {
   final _scanController = StreamController<List<ScannedDevice>>.broadcast();
   final _connectionController = StreamController<bool>.broadcast();
   final _logController = StreamController<String>.broadcast();
-  final _otaController = StreamController<Uint8List>.broadcast();
 
   StreamSubscription<List<ScanResult>>? _scanSub;
   StreamSubscription<List<int>>? _notifySub;
-  StreamSubscription<List<int>>? _otaNotifySub;
   StreamSubscription<BluetoothConnectionState>? _connSub;
 
   BluetoothDevice? _device;
   BluetoothCharacteristic? _writeChar;
-  BluetoothCharacteristic? _otaChar;
 
   /// True only after write/notify characteristics are ready.
   bool _fullyReady = false;
@@ -50,10 +47,8 @@ class BleService {
   Stream<List<ScannedDevice>> get scanResults => _scanController.stream;
   Stream<bool> get connectionState => _connectionController.stream;
   Stream<String> get logs => _logController.stream;
-  Stream<Uint8List> get otaNotifications => _otaController.stream;
 
   bool get isConnected => _device != null && _writeChar != null && _fullyReady;
-  bool get supportsOta => isConnected && _otaChar != null;
   bool get isConnecting => _connecting;
   BluetoothDevice? get device => _device;
 
@@ -129,9 +124,9 @@ class BleService {
     if (state == BluetoothAdapterState.unauthorized) {
       throw Exception(
         Platform.isMacOS
-            ? 'Anker 录音机未获得蓝牙权限。\n'
+            ? '安克录音豆未获得蓝牙权限。\n'
                   '系统设置 → 隐私与安全性 → 蓝牙 → 启用本应用后重试。'
-            : '蓝牙权限被拒绝。请允许 Anker 录音机使用蓝牙后重试。',
+            : '蓝牙权限被拒绝。请允许安克录音豆使用蓝牙后重试。',
       );
     }
 
@@ -300,7 +295,6 @@ class BleService {
           lastError = e;
           _log('Connect attempt $attempt/$maxAttempts failed: $e');
           _writeChar = null;
-          _otaChar = null;
           _fullyReady = false;
           try {
             await device.disconnect();
@@ -309,8 +303,6 @@ class BleService {
           _connSub = null;
           await _notifySub?.cancel();
           _notifySub = null;
-          await _otaNotifySub?.cancel();
-          _otaNotifySub = null;
           if (attempt < maxAttempts) {
             // Longer backoff: radio / peripheral often needs 1–2s after a fail.
             final delayMs = 600 * attempt;
@@ -422,7 +414,6 @@ class BleService {
 
     BluetoothCharacteristic? write;
     BluetoothCharacteristic? notify;
-    BluetoothCharacteristic? ota;
 
     // Prefer characteristics under the D3200 service when present.
     final preferred = <BluetoothService>[
@@ -432,9 +423,6 @@ class BleService {
 
     for (final svc in preferred) {
       for (final c in svc.characteristics) {
-        if (ota == null && AnkerUuids.isOta(c.uuid)) {
-          ota = c;
-        }
         if (write == null &&
             AnkerUuids.isWrite(c.uuid) &&
             (c.properties.write || c.properties.writeWithoutResponse)) {
@@ -469,7 +457,6 @@ class BleService {
     }
 
     _writeChar = write;
-    _otaChar = ota;
     _rxBuffer.clear();
 
     // Enable notify with a short retry — occasional macOS flake.
@@ -494,26 +481,9 @@ class BleService {
     _notifySub = notify.onValueReceived.listen(_onBytes);
     device.cancelWhenDisconnected(_notifySub!);
 
-    if (ota != null && (ota.properties.notify || ota.properties.indicate)) {
-      try {
-        await ota.setNotifyValue(true);
-        await _otaNotifySub?.cancel();
-        _otaNotifySub = ota.onValueReceived.listen((data) {
-          if (data.isEmpty) return;
-          final bytes = Uint8List.fromList(data);
-          _log('OTA RX ${bytes.toHex()}');
-          if (!_otaController.isClosed) _otaController.add(bytes);
-        });
-        device.cancelWhenDisconnected(_otaNotifySub!);
-      } catch (e) {
-        _log('OTA notifications unavailable: $e');
-        _otaChar = null;
-      }
-    }
-
     _log(
       'Connected. write=${write.uuid} notify=${notify.uuid} '
-      'ota=${_otaChar?.uuid ?? "none"} services=${services.length}',
+      'services=${services.length}',
     );
   }
 
@@ -578,45 +548,9 @@ class BleService {
     await c.write(frame, withoutResponse: withoutResp);
   }
 
-  /// Ask for the largest practical ATT MTU before a firmware transfer.
-  Future<void> prepareOta() async {
-    final device = _device;
-    if (device == null || !_fullyReady) throw StateError('未连接');
-    if (_otaChar == null) throw StateError('设备未提供 OTA GATT 服务');
-    if (Platform.isAndroid) {
-      try {
-        await device.requestMtu(512);
-      } catch (e) {
-        _log('OTA MTU 512 request failed; using ${device.mtuNow}: $e');
-      }
-    }
-    _log('OTA ready: mtu=${device.mtuNow}, payload=$otaPayloadSize');
-  }
-
-  /// Maximum BES 0x85 payload that fits one ATT characteristic write.
-  int get otaPayloadSize {
-    final mtu = _device?.mtuNow ?? 23;
-    // ATT value is MTU-3; BES command+length header is 5 bytes.
-    return (mtu - 8).clamp(12, 504).toInt();
-  }
-
-  Future<void> writeOtaCommand(List<int> command) async {
-    final c = _otaChar;
-    if (c == null || !_fullyReady) throw StateError('OTA 通道未就绪');
-    final maxWrite = ((_device?.mtuNow ?? 23) - 3).clamp(17, 509).toInt();
-    if (command.length > maxWrite) {
-      throw StateError('OTA 数据包 ${command.length}B 超过当前 BLE 上限 ${maxWrite}B');
-    }
-    _log('OTA TX ${command.toHex()}');
-    final withoutResponse = c.properties.writeWithoutResponse;
-    await c.write(command, withoutResponse: withoutResponse);
-  }
-
   Future<void> _cleanupSession({required bool emitDisconnect}) async {
     await _notifySub?.cancel();
     _notifySub = null;
-    await _otaNotifySub?.cancel();
-    _otaNotifySub = null;
     await _connSub?.cancel();
     _connSub = null;
     try {
@@ -624,7 +558,6 @@ class BleService {
     } catch (_) {}
     _device = null;
     _writeChar = null;
-    _otaChar = null;
     _rxBuffer.clear();
     final wasReady = _fullyReady;
     _fullyReady = false;
@@ -648,6 +581,5 @@ class BleService {
     await _scanController.close();
     await _connectionController.close();
     await _logController.close();
-    await _otaController.close();
   }
 }

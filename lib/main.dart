@@ -17,18 +17,18 @@ void main() {
       systemNavigationBarIconBrightness: Brightness.dark,
     ),
   );
-  runApp(const AnkerRecorderApp());
+  runApp(const SoundcoreManagerApp());
 }
 
-class AnkerRecorderApp extends StatelessWidget {
-  const AnkerRecorderApp({super.key});
+class SoundcoreManagerApp extends StatelessWidget {
+  const SoundcoreManagerApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
       create: (_) => RecorderController(),
       child: MaterialApp(
-        title: 'Anker 录音机',
+        title: '安克录音豆',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.light,
         home: const AppShell(),

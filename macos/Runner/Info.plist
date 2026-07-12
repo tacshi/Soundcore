@@ -29,11 +29,21 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Anker Recorder uses Bluetooth to find and manage your soundcore Work device.</string>
+	<string>Soundcore Manager uses Bluetooth to find and manage your soundcore Work device.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
-	<string>Anker Recorder uses Bluetooth to find and manage your soundcore Work device.</string>
+	<string>Soundcore Manager uses Bluetooth to find and manage your soundcore Work device.</string>
 	<key>CFBundleDisplayName</key>
-	<string>Anker Recorder</string>
+	<string>安克录音豆</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.anker.soundcoreManager</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>soundcore</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
-

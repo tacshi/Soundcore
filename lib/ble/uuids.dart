@@ -11,8 +11,6 @@ class AnkerUuids {
   static final write = Guid('00007777-0000-1000-8000-00805F9B34FB');
   static final readNotify = Guid('00008888-0000-1000-8000-00805F9B34FB');
   static final cccd = Guid('00002902-0000-1000-8000-00805f9b34fb');
-  static final otaService = Guid('66666666-6666-6666-6666-666666666666');
-  static final otaChar = Guid('77777777-7777-7777-7777-777777777777');
 
   static bool isD3200Service(Guid g) {
     final s = g.str128.toLowerCase().replaceAll('-', '');
@@ -27,7 +25,4 @@ class AnkerUuids {
 
   static bool isRead(Guid g) =>
       g == readNotify || g.str128.toUpperCase().contains('00008888');
-
-  static bool isOta(Guid g) =>
-      g == otaChar || g.str128.toLowerCase() == otaChar.str128.toLowerCase();
 }

@@ -1,5 +1,5 @@
 name: anker_recorder
-description: "Anker Recorder — local BLE manager for soundcore Work (D3200 / 安克 AI 录音豆)."
+description: "Soundcore Manager（安克录音豆）— local BLE manager for soundcore Work D3200."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

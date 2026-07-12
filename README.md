@@ -1,4 +1,4 @@
-# Anker Recorder
+# Soundcore Manager（安克录音豆）
 
 Local management app for **soundcore Work** (安克 AI 录音豆 / **D3200**), built from the protocol notes in [`../PROTOCOL.md`](../PROTOCOL.md).
 
@@ -14,8 +14,6 @@ Local management app for **soundcore Work** (安克 AI 录音豆 / **D3200**), b
 
 - **首页**: live AI transcription while recording, otherwise on-device + local file list
 - **设备**: battery, record controls, bind / unbind, factory reset
-- **固件 OTA**: local D3200 image transfer over the dedicated BLE OTA service,
-  with per-segment and whole-image CRC verification, progress, and cancellation
 - **设置**: STT provider (xAI / Soniox), language, auto-transfer, API keys, logs
 - **扫描**: button + bottom sheet (not a tab) to find & connect BLE devices
 - SoftAP Wi‑Fi batch export + AES decrypt; local playback of exports
@@ -38,7 +36,7 @@ flutter run -d android
 ## Build
 
 ```bash
-# macOS release + DMG → dist/anker_recorder-<version>-macos.dmg
+# macOS release + DMG → dist/soundcore-manager-<version>-macos.dmg
 ./scripts/build-dmg.sh
 ./scripts/build-dmg.sh --open       # also reveal DMG in Finder
 ./scripts/build-dmg.sh --skip-build # package existing Release .app
@@ -59,7 +57,3 @@ flutter build apk   # or appbundle
   Saved under `Documents/AnkerRecorder/exports` as `{fileId}.opus` (or `.opus.bin` if
   handshake failed). Local **Play** uses `just_audio` on exported files.
 - Keep Bluetooth on; grant location on older Android for scan.
-- **Firmware safety:** only use an official soundcore Work D3200 image. Stop
-  recording, keep the microphone at 30%+ battery (or charging), and do not close
-  the app or disable Bluetooth during OTA. The app uses a local firmware file
-  selected by the user and never downloads firmware itself.

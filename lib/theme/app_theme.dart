@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// Light design system for Anker Recorder.
+/// Light design system for Soundcore Manager.
 class AppColors {
   AppColors._();
 

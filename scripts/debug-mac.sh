@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Build and run Anker Recorder for macOS in debug mode.
+# Build and run Soundcore Manager for macOS in debug mode.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-APP_NAME="anker_recorder"
+APP_NAME="Soundcore Manager"
 DEBUG_APP="build/macos/Build/Products/Debug/${APP_NAME}.app"
 
 usage() {
   cat <<'EOF'
 Usage: scripts/debug-mac.sh [options]
 
-  Debug build of Anker Recorder for macOS.
+  Debug build of Soundcore Manager for macOS.
 
 Options:
   --build-only   Compile debug .app without launching
