@@ -126,31 +126,6 @@ class DeviceScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 18),
-            const SectionLabel('设备信息'),
-            SurfaceCard(
-              child: Column(
-                children: [
-                  const _DeviceInfoRow(label: '产品', value: 'D3200'),
-                  const Divider(),
-                  _DeviceInfoRow(
-                    label: '序列号',
-                    value: info?.serialNumber.isNotEmpty == true
-                        ? info!.serialNumber
-                        : '—',
-                  ),
-                  const Divider(),
-                  _DeviceInfoRow(
-                    label: '固件版本',
-                    value: info?.firmwareVersion.isNotEmpty == true
-                        ? info!.firmwareVersion
-                        : '—',
-                  ),
-                  const Divider(),
-                  _DeviceInfoRow(label: '存储', value: info?.storageLabel ?? '—'),
-                ],
-              ),
-            ),
-            const SizedBox(height: 18),
             const SectionLabel('录音'),
             SurfaceCard(
               child: Column(
@@ -261,6 +236,31 @@ class DeviceScreen extends StatelessWidget {
                       ),
                     ],
                   ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+            const SectionLabel('设备信息'),
+            SurfaceCard(
+              child: Column(
+                children: [
+                  const _DeviceInfoRow(label: '产品', value: 'D3200'),
+                  const Divider(),
+                  _DeviceInfoRow(
+                    label: '序列号',
+                    value: info?.serialNumber.isNotEmpty == true
+                        ? info!.serialNumber
+                        : '—',
+                  ),
+                  const Divider(),
+                  _DeviceInfoRow(
+                    label: '固件版本',
+                    value: info?.firmwareVersion.isNotEmpty == true
+                        ? info!.firmwareVersion
+                        : '—',
+                  ),
+                  const Divider(),
+                  _DeviceInfoRow(label: '存储', value: info?.storageLabel ?? '—'),
                 ],
               ),
             ),

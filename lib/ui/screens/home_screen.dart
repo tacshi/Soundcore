@@ -36,31 +36,24 @@ class _HomeScreenState extends State<HomeScreen> {
     final live = c.isLiveSession;
 
     return GradientScaffold(
-      child: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
-              child: _ConnectionHeader(
-                onScan: () => showScanDevicesSheet(context),
-              ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _ConnectionHeader(onScan: () => showScanDevicesSheet(context)),
+          Expanded(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              switchInCurve: Curves.easeOut,
+              switchOutCurve: Curves.easeIn,
+              child: live
+                  ? const _LiveSessionView(key: ValueKey('live'))
+                  : const FilesBody(
+                      key: ValueKey('files'),
+                      padding: EdgeInsets.fromLTRB(20, 8, 20, 110),
+                    ),
             ),
-            Expanded(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 220),
-                switchInCurve: Curves.easeOut,
-                switchOutCurve: Curves.easeIn,
-                child: live
-                    ? const _LiveSessionView(key: ValueKey('live'))
-                    : const FilesBody(
-                        key: ValueKey('files'),
-                        padding: EdgeInsets.fromLTRB(20, 0, 20, 110),
-                      ),
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -87,11 +80,14 @@ class _ConnectionHeader extends StatelessWidget {
     final online = c.connected;
     final name = c.displayDeviceName;
 
-    return SurfaceCard(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      borderColor: online
-          ? AppColors.mint.withValues(alpha: 0.35)
-          : AppColors.border,
+    return Container(
+      color: AppColors.bgCard,
+      padding: EdgeInsets.fromLTRB(
+        20,
+        MediaQuery.paddingOf(context).top + 12,
+        20,
+        16,
+      ),
       child: Row(
         children: [
           Container(
@@ -161,16 +157,15 @@ class _ConnectionHeader extends StatelessWidget {
               icon: c.recording ? Icons.fiber_manual_record : null,
             ),
           ] else
-            IconButton.filled(
+            IconButton(
               tooltip: '扫描',
               onPressed: onScan,
               style: IconButton.styleFrom(
-                backgroundColor: AppColors.accent,
-                foregroundColor: Colors.white,
-                minimumSize: const Size(44, 44),
-                padding: const EdgeInsets.all(11),
+                foregroundColor: AppColors.accent,
+                minimumSize: const Size(48, 48),
+                padding: EdgeInsets.zero,
               ),
-              icon: const Icon(Icons.radar_rounded, size: 22),
+              icon: const Icon(Icons.radar_rounded, size: 44),
             ),
         ],
       ),

@@ -352,7 +352,11 @@ class _ConnectGuidePanelState extends State<_ConnectGuidePanel>
           else
             TextButton.icon(
               onPressed: widget.onRescan,
-              icon: const Icon(Icons.radar_rounded, size: 18),
+              icon: const Icon(
+                Icons.radar_rounded,
+                size: 22,
+                color: AppColors.accent,
+              ),
               label: const Text('重新扫描'),
             ),
           if (widget.adsSeen > 0) ...[
