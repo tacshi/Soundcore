@@ -299,13 +299,13 @@ class WifiExportService {
       ),
     );
 
-    await _connectWs(endpoint, useSsl: useSsl);
-    _startUdpKeepalive(endpoint.ip);
-
-    final outDir = await _exportDir();
-    _log('Export dir: ${outDir.path}');
-
     try {
+      await _connectWs(endpoint, useSsl: useSsl);
+      _startUdpKeepalive(endpoint.ip);
+
+      final outDir = await _exportDir();
+      _log('Export dir: ${outDir.path}');
+
       for (var i = 0; i < files.length; i++) {
         if (_cancelled) break;
         final f = files[i];
@@ -352,6 +352,16 @@ class WifiExportService {
         ),
       );
       return saved;
+    } catch (e) {
+      _emit(
+        _progress.copyWith(
+          phase: ExportPhase.error,
+          message: '导出失败',
+          error: '$e',
+          savedPaths: List.unmodifiable(saved),
+        ),
+      );
+      rethrow;
     } finally {
       await _teardownLink(closeDeviceWifi: true);
     }

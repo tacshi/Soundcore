@@ -1867,6 +1867,12 @@ class RecorderController extends ChangeNotifier {
 
   // ── Wi‑Fi batch export ────────────────────────────────────────────────
 
+  /// Snapshot of files to transfer, taken while still BLE-connected. Joining
+  /// the device's SoftAP for the actual transfer causes a natural BLE drop,
+  /// which wipes `files`/`selectedFileIds` — continueWifiExport() must not
+  /// re-derive its target list from those afterwards or it sees nothing.
+  List<OfflineFileEntry> _pendingExportTargets = [];
+
   /// Open device SoftAP and wait for IP:port. UI should then prompt join.
   Future<WifiEndpoint?> beginWifiExport() async {
     if (!_ble.isConnected) {
@@ -1880,6 +1886,7 @@ class RecorderController extends ChangeNotifier {
       notifyListeners();
       return null;
     }
+    _pendingExportTargets = List.of(targets);
 
     errorMessage = null;
     phase = AppPhase.busy;
@@ -1917,13 +1924,25 @@ class RecorderController extends ChangeNotifier {
   Future<List<String>> continueWifiExport() async {
     final ep = exportProgress.endpoint;
     if (ep == null) {
-      errorMessage = '无 SoftAP 端点 — 请重新开始导出';
+      const msg = '无 SoftAP 端点 — 请重新开始导出';
+      errorMessage = msg;
+      // The join sheet only reads exportProgress.error, not errorMessage —
+      // without this it silently resets with no visible feedback.
+      exportProgress = exportProgress.copyWith(
+        phase: ExportPhase.error,
+        error: msg,
+      );
       notifyListeners();
       return const [];
     }
-    final targets = selectedFiles.isNotEmpty ? selectedFiles : files;
+    final targets = _pendingExportTargets;
     if (targets.isEmpty) {
-      errorMessage = '未选择文件';
+      const msg = '未选择文件';
+      errorMessage = msg;
+      exportProgress = exportProgress.copyWith(
+        phase: ExportPhase.error,
+        error: msg,
+      );
       notifyListeners();
       return const [];
     }
@@ -1939,6 +1958,7 @@ class RecorderController extends ChangeNotifier {
         paths.add(await _convertExportToWav(path, register: false));
       }
       _registerExportedPaths(paths);
+      _pendingExportTargets = [];
       phase = AppPhase.ready;
       statusMessage = paths.isEmpty
           ? '导出完成但无数据'
@@ -2127,6 +2147,7 @@ class RecorderController extends ChangeNotifier {
 
   Future<void> cancelWifiExport() async {
     await _wifi.cancel();
+    _pendingExportTargets = [];
     phase = connected ? AppPhase.ready : AppPhase.idle;
     statusMessage = '已取消导出';
     notifyListeners();

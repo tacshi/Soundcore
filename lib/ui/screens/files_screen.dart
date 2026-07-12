@@ -4,8 +4,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_selector/file_selector.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../ai/stt_types.dart';
 import '../../protocol/models.dart';
@@ -968,13 +970,16 @@ class _WifiJoinSheetState extends State<_WifiJoinSheet> {
 
   Future<void> _continueExport() async {
     if (_running) return;
+    // A manual tap after a failed auto-attempt still counts as "started" —
+    // stops _probe() from silently racing another auto-retry underneath it.
+    _autoStarted = true;
     setState(() => _running = true);
     final c = widget.controller;
     final paths = await c.continueWifiExport();
     if (!mounted) return;
     if (paths.isNotEmpty || c.exportProgress.phase == ExportPhase.done) {
       Navigator.of(context).pop();
-      final bleNote = c.connected ? '' : ' 蓝牙可能已断开，导出后请点「扫描」重连。';
+      final bleNote = c.connected ? '' : ' 蓝牙已断开，正在自动重连…';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -984,32 +989,56 @@ class _WifiJoinSheetState extends State<_WifiJoinSheet> {
         ),
       );
     } else {
-      setState(() {
-        _running = false;
-        _autoStarted = false; // allow another auto try after failure
-      });
+      // Leave _autoStarted set: only the explicit "开始导出" button retries
+      // from here, so the error message below doesn't get silently cleared
+      // by another background auto-attempt every 2s.
+      setState(() => _running = false);
+      // The inline error card below is easy to miss (esp. on an auto-fired
+      // attempt the user didn't watch) — a toast makes the failure obvious.
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(c.exportProgress.error ?? c.errorMessage ?? '导出失败'),
+          backgroundColor: AppColors.coral,
+          duration: const Duration(seconds: 4),
+        ),
+      );
     }
   }
 
   Future<void> _openWifiSettings() async {
-    try {
-      if (Platform.isMacOS) {
+    if (Platform.isMacOS) {
+      try {
         // Opens System Settings → Wi‑Fi on modern macOS.
         await Process.run('open', [
           'x-apple.systempreferences:com.apple.wifi-settings-extension',
         ]);
-      } else if (Platform.isIOS) {
-        // Best-effort; may be restricted by iOS.
-        await Process.run('open', ['App-Prefs:WIFI']);
-      }
-    } catch (_) {
-      try {
-        if (Platform.isMacOS) {
+      } catch (_) {
+        try {
           await Process.run('open', [
             '/System/Library/PreferencePanes/Network.prefPane',
           ]);
-        }
-      } catch (_) {}
+        } catch (_) {}
+      }
+      return;
+    }
+    if (Platform.isIOS) {
+      // App-Prefs:root=WIFI is a private, undocumented scheme (not usable
+      // for App Store review) but works for sideloaded/dev-signed installs
+      // like this one and jumps straight to the Wi‑Fi pane. If it's ever
+      // blocked by the OS, fall back to this app's own Settings page.
+      final opened = await launchUrl(
+        Uri.parse('App-Prefs:root=WIFI'),
+        mode: LaunchMode.externalApplication,
+      ).catchError((_) => false);
+      if (opened) return;
+      await openAppSettings();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('请返回「设置」首页，点击「无线局域网」加入热点'),
+          duration: Duration(seconds: 4),
+        ),
+      );
     }
   }
 
@@ -1173,7 +1202,11 @@ class _WifiJoinSheetState extends State<_WifiJoinSheet> {
               '端点 192.168.43.x 为设备热点网关，说明 SoftAP 指令已成功。',
               style: TextStyle(color: AppColors.textMuted, fontSize: 11),
             ),
-            if (_reachable && !transferring) ...[
+            // Only shown before the first (automatic) attempt — once that's
+            // resolved (success navigates away; failure shows p.error below
+            // instead), this must not linger next to an idle "开始导出"
+            // button implying a start that already stalled.
+            if (_reachable && !transferring && !_autoStarted) ...[
               const SizedBox(height: 8),
               const Row(
                 children: [
