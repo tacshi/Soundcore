@@ -1879,6 +1879,7 @@ class RecorderController extends ChangeNotifier {
   Future<String> _convertExportToWav(
     String path, {
     bool register = true,
+    List<String>? conversionFailures,
   }) async {
     if (!path.endsWith('.opus')) return path;
     try {
@@ -1890,6 +1891,7 @@ class RecorderController extends ChangeNotifier {
       return wavPath;
     } catch (error) {
       debugPrint('[Exports] WAV conversion failed for $path: $error');
+      conversionFailures?.add('${p.basename(path)}: $error');
       return path;
     }
   }
@@ -2062,8 +2064,15 @@ class RecorderController extends ChangeNotifier {
       final rawPaths = await _wifi.transferFiles(endpoint: ep, files: targets);
       if (run != _wifiExportRun) return const [];
       final paths = <String>[];
+      final conversionFailures = <String>[];
       for (final path in rawPaths) {
-        paths.add(await _convertExportToWav(path, register: false));
+        paths.add(
+          await _convertExportToWav(
+            path,
+            register: false,
+            conversionFailures: conversionFailures,
+          ),
+        );
       }
       _registerExportedPaths(paths);
       _pendingExportTargets = [];
@@ -2072,6 +2081,11 @@ class RecorderController extends ChangeNotifier {
           ? '导出完成但无数据'
           : '已导出 ${paths.length} 个文件'
                 '${encryptReady ? "（已解密）" : "（原始密文 — 无会话）"}';
+      // WAV conversion runs per file after the transfer; surface failures
+      // instead of silently leaving the raw .opus frame stream behind.
+      errorMessage = conversionFailures.isEmpty
+          ? null
+          : 'WAV 转码失败，已保留原始 Opus 帧：${conversionFailures.join("; ")}';
       selecting = false;
       selectedFileIds.clear();
       notifyListeners();
