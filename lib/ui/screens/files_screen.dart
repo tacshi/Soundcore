@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:provider/provider.dart';
 
 import '../../ai/stt_types.dart';
@@ -55,7 +56,7 @@ class _FilesBodyState extends State<FilesBody>
     final c = context.watch<RecorderController>();
     final exporting = c.isExporting || c.needsWifiJoin;
     final busy = c.phase == AppPhase.busy || exporting;
-    final localPaths = c.exportedPaths.take(24).toList();
+    final localPaths = c.exportedPaths.toList();
     final localCount = c.exportedPaths.length;
     final deviceCount = c.files.length;
 
@@ -139,29 +140,147 @@ class _FilesBodyState extends State<FilesBody>
   }
 }
 
-class _LocalExportsTab extends StatelessWidget {
+class _LocalExportsTab extends StatefulWidget {
   const _LocalExportsTab({required this.paths});
 
   final List<String> paths;
 
   @override
+  State<_LocalExportsTab> createState() => _LocalExportsTabState();
+}
+
+class _LocalExportsTabState extends State<_LocalExportsTab> {
+  final Set<String> _selected = {};
+  bool _selecting = false;
+  bool _saving = false;
+
+  void _toggleSelecting() {
+    setState(() {
+      _selecting = !_selecting;
+      if (!_selecting) _selected.clear();
+    });
+  }
+
+  Future<void> _saveSelected(BuildContext context) async {
+    if (_selected.isEmpty || _saving) return;
+    final destination = await getDirectoryPath(
+      confirmButtonText: '保存到这里',
+      canCreateDirectories: true,
+    );
+    if (destination == null || !context.mounted) return;
+
+    setState(() => _saving = true);
+    final result = await context.read<RecorderController>().saveLocalCopies(
+      _selected,
+      destination,
+    );
+    if (!context.mounted) return;
+    setState(() {
+      _saving = false;
+      if (result.failed.isEmpty) {
+        _selecting = false;
+        _selected.clear();
+      }
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          result.failed.isEmpty
+              ? '已保存 ${result.audios} 个录音和 ${result.transcripts} 份转写'
+              : '已保存 ${result.audios} 个录音，${result.failed.length} 个失败',
+        ),
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (paths.isEmpty) {
+    if (widget.paths.isEmpty) {
       return const _Hint(
         icon: Icons.folder_open_rounded,
         title: '暂无本地导出',
         body: '录音结束后的实时文件，或从「设备端」Wi‑Fi 导出后，会出现在这里。',
       );
     }
-    return ListView.builder(
-      padding: const EdgeInsets.only(bottom: 24),
-      itemCount: paths.length,
-      itemBuilder: (context, i) {
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: _LocalExportCard(path: paths[i]),
-        );
-      },
+    _selected.removeWhere((path) => !widget.paths.contains(path));
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            if (_selecting) ...[
+              TextButton(
+                onPressed: _saving
+                    ? null
+                    : () => setState(() => _selected.addAll(widget.paths)),
+                child: const Text('全选'),
+              ),
+              TextButton(
+                onPressed: _saving || _selected.isEmpty
+                    ? null
+                    : () => setState(_selected.clear),
+                child: const Text('清空'),
+              ),
+              const Spacer(),
+              Text(
+                '已选 ${_selected.length} 项',
+                style: const TextStyle(
+                  color: AppColors.textMuted,
+                  fontSize: 12,
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                onPressed: _selected.isEmpty || _saving
+                    ? null
+                    : () => _saveSelected(context),
+                icon: _saving
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.save_alt_rounded, size: 18),
+                label: Text(_saving ? '保存中…' : '保存所选'),
+              ),
+            ] else ...[
+              const Spacer(),
+              TextButton.icon(
+                onPressed: _toggleSelecting,
+                icon: const Icon(Icons.drive_file_move_outline, size: 18),
+                label: const Text('批量另存'),
+              ),
+            ],
+            if (_selecting)
+              IconButton(
+                tooltip: '取消选择',
+                onPressed: _saving ? null : _toggleSelecting,
+                icon: const Icon(Icons.close_rounded),
+              ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.only(bottom: 24),
+            itemCount: widget.paths.length,
+            itemBuilder: (context, i) {
+              final path = widget.paths[i];
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _LocalExportCard(
+                  path: path,
+                  selecting: _selecting,
+                  selected: _selected.contains(path),
+                  onSelected: () => setState(() {
+                    if (!_selected.add(path)) _selected.remove(path);
+                  }),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }
@@ -285,9 +404,17 @@ class _DeviceFilesTab extends StatelessWidget {
 }
 
 class _LocalExportCard extends StatelessWidget {
-  const _LocalExportCard({required this.path});
+  const _LocalExportCard({
+    required this.path,
+    this.selecting = false,
+    this.selected = false,
+    this.onSelected,
+  });
 
   final String path;
+  final bool selecting;
+  final bool selected;
+  final VoidCallback? onSelected;
 
   @override
   Widget build(BuildContext context) {
@@ -307,13 +434,17 @@ class _LocalExportCard extends StatelessWidget {
           : hasText
           ? AppColors.violet.withValues(alpha: 0.3)
           : null,
-      onTap: () => c.toggleLocalExpanded(path),
+      onTap: selecting ? onSelected : () => c.toggleLocalExpanded(path),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
             children: [
+              if (selecting) ...[
+                Checkbox(value: selected, onChanged: (_) => onSelected?.call()),
+                const SizedBox(width: 4),
+              ],
               Icon(
                 name.endsWith('.opus')
                     ? Icons.audio_file_rounded
@@ -353,15 +484,16 @@ class _LocalExportCard extends StatelessWidget {
                   ],
                 ),
               ),
-              Icon(
-                expanded
-                    ? Icons.expand_less_rounded
-                    : Icons.expand_more_rounded,
-                color: AppColors.textMuted,
-              ),
+              if (!selecting)
+                Icon(
+                  expanded
+                      ? Icons.expand_less_rounded
+                      : Icons.expand_more_rounded,
+                  color: AppColors.textMuted,
+                ),
             ],
           ),
-          if (hasText && !expanded) ...[
+          if (hasText && !expanded && !selecting) ...[
             const SizedBox(height: 8),
             Text(
               text,
@@ -374,7 +506,7 @@ class _LocalExportCard extends StatelessWidget {
               ),
             ),
           ],
-          if (expanded) ...[
+          if (expanded && !selecting) ...[
             const SizedBox(height: 8),
             const Divider(height: 1, color: AppColors.border),
             if (hasText) ...[

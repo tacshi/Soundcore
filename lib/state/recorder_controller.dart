@@ -27,6 +27,7 @@ import '../wifi/wifi_export_service.dart';
 import 'app_settings_store.dart';
 import 'device_store.dart';
 import 'export_catalog.dart';
+import 'transcript_store.dart';
 
 enum AppPhase { idle, scanning, connecting, ready, busy }
 
@@ -155,6 +156,7 @@ class RecorderController extends ChangeNotifier {
     unawaited(_loadPersistedSettings());
     unawaited(_loadPersistedDevice());
     unawaited(_loadLocalExports());
+    _transcriptsLoaded = _loadPersistedTranscripts();
   }
 
   Future<void> _loadPersistedSettings() async {
@@ -219,6 +221,26 @@ class RecorderController extends ChangeNotifier {
     );
   }
 
+  Future<void> _loadPersistedTranscripts() async {
+    final saved = await TranscriptStore.load();
+    // Merge so a transcript completed during startup is never overwritten.
+    for (final entry in saved.byPath.entries) {
+      transcriptsByPath.putIfAbsent(entry.key, () => entry.value);
+    }
+    for (final entry in saved.byFileId.entries) {
+      transcriptsByFileId.putIfAbsent(entry.key, () => entry.value);
+    }
+    notifyListeners();
+  }
+
+  Future<void> _persistTranscripts() async {
+    await _transcriptsLoaded;
+    await TranscriptStore.save(
+      byPath: transcriptsByPath,
+      byFileId: transcriptsByFileId,
+    );
+  }
+
   void _onRealtimeState(RealtimeStreamState s) {
     final wasActive = realtimeState.active;
     realtimeState = s;
@@ -267,6 +289,7 @@ class RecorderController extends ChangeNotifier {
     // Also index by file id when known.
     final id = fileIdFromPath(path);
     if (id != null) transcriptsByFileId[id] = t;
+    unawaited(_persistTranscripts());
   }
 
   String? transcriptForPath(String path) {
@@ -875,6 +898,7 @@ class RecorderController extends ChangeNotifier {
 
   /// fileId → STT text (device list + local).
   final Map<int, String> transcriptsByFileId = {};
+  Future<void> _transcriptsLoaded = Future<void>.value();
 
   /// Legacy expand id (device list no longer expands for playback).
   int? expandedFileId;
@@ -1532,6 +1556,58 @@ class RecorderController extends ChangeNotifier {
     } catch (error) {
       debugPrint('[Exports] load local catalog failed: $error');
     }
+  }
+
+  /// Copy local recordings and their transcripts to a user-selected folder.
+  Future<({int audios, int transcripts, List<String> failed})> saveLocalCopies(
+    Iterable<String> paths,
+    String destinationPath,
+  ) async {
+    final destination = Directory(destinationPath);
+    var audios = 0;
+    var transcripts = 0;
+    final failed = <String>[];
+
+    try {
+      if (!await destination.exists()) {
+        await destination.create(recursive: true);
+      }
+    } catch (e) {
+      return (audios: 0, transcripts: 0, failed: ['$destinationPath: $e']);
+    }
+
+    for (final path in paths.toSet()) {
+      final source = File(path);
+      final name = p.basename(path);
+      try {
+        if (!await source.exists()) throw StateError('录音文件不存在');
+        final audioTarget = p.join(destination.path, name);
+        if (!p.equals(p.absolute(path), p.absolute(audioTarget))) {
+          await source.copy(audioTarget);
+        }
+        audios++;
+
+        final transcript = transcriptForPath(path)?.trim();
+        if (transcript != null && transcript.isNotEmpty) {
+          final stem = name.replaceFirst(RegExp(r'\.opus(?:\.bin)?$'), '');
+          final textTarget = File(p.join(destination.path, '$stem.txt'));
+          await textTarget.writeAsString(
+            normalizeSttText(transcript),
+            flush: true,
+          );
+          transcripts++;
+        }
+      } catch (e) {
+        failed.add('$name: $e');
+      }
+    }
+
+    statusMessage = failed.isEmpty
+        ? '已另存 $audios 个录音、$transcripts 份转写'
+        : '另存完成：$audios 个录音，${failed.length} 个失败';
+    errorMessage = failed.isEmpty ? null : failed.join('\n');
+    notifyListeners();
+    return (audios: audios, transcripts: transcripts, failed: failed);
   }
 
   void _registerExportedPaths(Iterable<String> paths) {
