@@ -73,13 +73,14 @@ class RecorderController extends ChangeNotifier {
       _ble.connectionState.listen((up) {
         connected = up;
         if (!up) {
+          final wifiHandoff = isWifiExportSession;
           // Ignore transient "not ready" while a connect attempt is still running.
           // Emitting false mid-GATT used to force phase=idle and re-enable multi-tap.
           if (phase == AppPhase.connecting || _ble.isConnecting) {
             notifyListeners();
             return;
           }
-          phase = AppPhase.idle;
+          phase = wifiHandoff ? AppPhase.busy : AppPhase.idle;
           // Keep lastKnown* + bound + activeDevice for Device-tab offline UI.
           if (info != null) lastKnownInfo = info;
           if (activeDevice != null) lastKnownDevice = activeDevice;
@@ -89,9 +90,11 @@ class RecorderController extends ChangeNotifier {
           selecting = false;
           recording = false;
           _recordWireStatus = 0;
-          encryptReady = false;
-          _crypto.resetSession();
-          _encryptCompleter = null;
+          if (!wifiHandoff) {
+            encryptReady = false;
+            _crypto.resetSession();
+            _encryptCompleter = null;
+          }
           _stopBatteryPoll();
           _fileListPageTimeout?.cancel();
           _loadingFileListPages = false;
@@ -99,11 +102,9 @@ class RecorderController extends ChangeNotifier {
           realtimeState = const RealtimeStreamState();
           unawaited(_finishStreamStt());
           unawaited(stopPlayback());
-          // Unexpected drop (e.g. BLE paused while joining the device's
-          // Wi‑Fi SoftAP for export) on a bound device — reconnect without
-          // making the user open the scan sheet. Skip after an explicit
-          // disconnect()/unbind tap.
-          if (bound && !_explicitDisconnect) {
+          // Reconnect unexpected drops immediately, except for the expected
+          // BLE→Wi-Fi handoff; that reconnect starts after transfer cleanup.
+          if (bound && !_explicitDisconnect && !wifiHandoff) {
             unawaited(startScan());
           }
           _explicitDisconnect = false;
@@ -990,11 +991,12 @@ class RecorderController extends ChangeNotifier {
         p == ExportPhase.closing;
   }
 
-  /// Probe whether the SoftAP HTTP/WS host is reachable (user joined Wi‑Fi).
-  Future<bool> probeSoftApReachable() async {
+  /// Check whether a local interface joined the device's SoftAP subnet.
+  /// This intentionally does not touch the device's WebSocket port.
+  Future<bool> isOnSoftApNetwork() async {
     final ep = exportProgress.endpoint;
     if (ep == null) return false;
-    return WifiExportService.probeEndpoint(ep);
+    return WifiExportService.isOnSoftApNetwork(ep);
   }
 
   int get adsSeen => _ble.adsSeen;
@@ -1038,6 +1040,12 @@ class RecorderController extends ChangeNotifier {
 
   List<OfflineFileEntry> get selectedFiles =>
       files.where((f) => selectedFileIds.contains(f.fileId)).toList();
+
+  List<OfflineFileEntry> get unexportedFiles =>
+      files.where((f) => localPathFor(f.fileId) == null).toList();
+
+  List<OfflineFileEntry> get selectedUnexportedFiles =>
+      selectedFiles.where((f) => localPathFor(f.fileId) == null).toList();
 
   Future<void> startScan() async {
     errorMessage = null;
@@ -1928,17 +1936,21 @@ class RecorderController extends ChangeNotifier {
   /// which wipes `files`/`selectedFileIds` — continueWifiExport() must not
   /// re-derive its target list from those afterwards or it sees nothing.
   List<OfflineFileEntry> _pendingExportTargets = [];
+  int _wifiExportRun = 0;
 
   /// Open device SoftAP and wait for IP:port. UI should then prompt join.
   Future<WifiEndpoint?> beginWifiExport() async {
+    _wifiExportRun++;
     if (!_ble.isConnected) {
       errorMessage = '请先通过 BLE 连接';
       notifyListeners();
       return null;
     }
-    final targets = selectedFiles.isNotEmpty ? selectedFiles : files;
+    final targets = selectedFileIds.isNotEmpty
+        ? selectedUnexportedFiles
+        : unexportedFiles;
     if (targets.isEmpty) {
-      errorMessage = '没有可导出的文件 — 请先获取录音列表';
+      errorMessage = selectedFileIds.isNotEmpty ? '所选录音均已导出' : '所有录音均已导出';
       notifyListeners();
       return null;
     }
@@ -1962,14 +1974,21 @@ class RecorderController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final ep = await _wifi.openSoftAp();
+      final ep = await _wifi.openSoftAp(
+        onConfigured: () async {
+          // Match Soundcore SDK handleConfigSuccess(): preserve the encryption
+          // session, disconnect BLE, then let the recorder finish SoftAP startup.
+          _stopBatteryPoll();
+          await _ble.disconnect();
+        },
+      );
       statusMessage = '请加入 SoftAP「${ep.ssid}」，然后点「继续导出」';
       // Stay "busy" while awaiting join so other ops don't collide.
       notifyListeners();
       return ep;
     } catch (e) {
       errorMessage = e.toString();
-      phase = AppPhase.ready;
+      phase = connected ? AppPhase.ready : AppPhase.idle;
       statusMessage = null;
       notifyListeners();
       return null;
@@ -1978,6 +1997,7 @@ class RecorderController extends ChangeNotifier {
 
   /// After user joined SoftAP, run WebSocket transfer for selection (or all).
   Future<List<String>> continueWifiExport() async {
+    final run = _wifiExportRun;
     final ep = exportProgress.endpoint;
     if (ep == null) {
       const msg = '无 SoftAP 端点 — 请重新开始导出';
@@ -2009,13 +2029,14 @@ class RecorderController extends ChangeNotifier {
 
     try {
       final rawPaths = await _wifi.transferFiles(endpoint: ep, files: targets);
+      if (run != _wifiExportRun) return const [];
       final paths = <String>[];
       for (final path in rawPaths) {
         paths.add(await _convertExportToWav(path, register: false));
       }
       _registerExportedPaths(paths);
       _pendingExportTargets = [];
-      phase = AppPhase.ready;
+      phase = connected ? AppPhase.ready : AppPhase.idle;
       statusMessage = paths.isEmpty
           ? '导出完成但无数据'
           : '已导出 ${paths.length} 个文件'
@@ -2023,12 +2044,15 @@ class RecorderController extends ChangeNotifier {
       selecting = false;
       selectedFileIds.clear();
       notifyListeners();
+      _reconnectBleAfterWifiExport();
       return paths;
     } catch (e) {
+      if (run != _wifiExportRun) return const [];
       errorMessage = e.toString();
-      phase = AppPhase.ready;
+      phase = connected ? AppPhase.ready : AppPhase.idle;
       statusMessage = '导出失败';
       notifyListeners();
+      _reconnectBleAfterWifiExport();
       return const [];
     }
   }
@@ -2202,11 +2226,19 @@ class RecorderController extends ChangeNotifier {
   }
 
   Future<void> cancelWifiExport() async {
+    _wifiExportRun++;
     await _wifi.cancel();
     _pendingExportTargets = [];
     phase = connected ? AppPhase.ready : AppPhase.idle;
     statusMessage = '已取消导出';
     notifyListeners();
+    _reconnectBleAfterWifiExport();
+  }
+
+  void _reconnectBleAfterWifiExport() {
+    if (!connected && bound && !_explicitDisconnect && !_ble.isConnecting) {
+      unawaited(startScan());
+    }
   }
 
   Future<void> copyWifiCredentials() async {

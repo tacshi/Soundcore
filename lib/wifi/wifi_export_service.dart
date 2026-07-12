@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:pointycastle/export.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -31,21 +33,6 @@ class WifiEndpoint {
 
   @override
   String toString() => 'WifiEndpoint($ssid → $displayEndpoint)';
-}
-
-/// TCP probe used by the join sheet to detect when the user has joined SoftAP.
-extension WifiEndpointProbe on WifiEndpoint {
-  Future<bool> isReachable({
-    Duration timeout = const Duration(seconds: 2),
-  }) async {
-    try {
-      final socket = await Socket.connect(ip, port, timeout: timeout);
-      socket.destroy();
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
 }
 
 enum ExportPhase {
@@ -152,8 +139,128 @@ class WifiExportService {
   final Future<void> Function(List<int> frame) bleWrite;
   final DeviceCrypto crypto;
 
-  /// True when the host can open a TCP socket to the SoftAP endpoint.
-  static Future<bool> probeEndpoint(WifiEndpoint ep) => ep.isReachable();
+  /// Soundcore SDK default `wifiConnectionDelayMS` for D3200 SoftAP startup.
+  static const softApStartupDelay = Duration(seconds: 10);
+  static const webSocketReadyTimeout = Duration(seconds: 6);
+  static const webSocketRetryDelay = Duration(milliseconds: 500);
+
+  /// Detect the device subnet without opening its single embedded WSS listener.
+  /// The Soundcore SDK checks the joined Wi-Fi network before connecting; a raw
+  /// TCP probe can occupy port 443 while the device waits for a TLS handshake.
+  static Future<bool> isOnSoftApNetwork(WifiEndpoint ep) async {
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      return sharesIpv4Subnet(
+        ep.ip,
+        interfaces.expand(
+          (interface) => interface.addresses.map((a) => a.address),
+        ),
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @visibleForTesting
+  static bool sharesIpv4Subnet(String deviceIp, Iterable<String> localIps) {
+    final device = InternetAddress.tryParse(deviceIp);
+    if (device == null || device.type != InternetAddressType.IPv4) return false;
+    final target = device.rawAddress;
+    return localIps.any((address) {
+      final local = InternetAddress.tryParse(address);
+      if (local == null || local.type != InternetAddressType.IPv4) return false;
+      final bytes = local.rawAddress;
+      return bytes[0] == target[0] &&
+          bytes[1] == target[1] &&
+          bytes[2] == target[2] &&
+          bytes[3] != target[3];
+    });
+  }
+
+  /// Match the exact RFC 6455 handshake emitted by the SDK's OkHttp client
+  /// (`okhttp/3.12.13.18` — see decompiled `vv7.d.a()` /
+  /// `WiFiWebSocketManager`), byte-for-byte. Two things about `dart:io`'s
+  /// [HttpClient] diverge from that on the wire:
+  ///  - `HttpHeaders.xxxHeader` constants (and any name set without
+  ///    `preserveHeaderCase`) are serialized lowercase (`upgrade:`,
+  ///    `sec-websocket-key:`, …). A minimal embedded HTTP/WS parser on the
+  ///    recorder doing case-sensitive matching (e.g. `strstr("Upgrade:")`)
+  ///    would never recognize the request as an upgrade and reply 400 —
+  ///    every header below must be set with its real HTTP casing.
+  ///  - Dart's client adds `Cache-Control` and omits `Accept-Encoding`/
+  ///    `User-Agent`; OkHttp's `BridgeInterceptor` does the opposite.
+  @visibleForTesting
+  static Future<WebSocket> connectSdkWebSocket(
+    String url,
+    HttpClient client,
+  ) async {
+    final wsUri = Uri.parse(url);
+    final httpUri = wsUri.replace(
+      scheme: wsUri.scheme == 'wss' ? 'https' : 'http',
+    );
+    final nonce = Uint8List(16);
+    final random = Random.secure();
+    for (var i = 0; i < nonce.length; i++) {
+      nonce[i] = random.nextInt(256);
+    }
+    final key = base64Encode(nonce);
+
+    client.autoUncompress = false;
+    final request = await client.openUrl('GET', httpUri);
+    request.followRedirects = false;
+    request.headers
+      ..removeAll(HttpHeaders.cacheControlHeader)
+      ..set(
+        'Host',
+        httpUri.hasPort ? '${httpUri.host}:${httpUri.port}' : httpUri.host,
+        preserveHeaderCase: true,
+      )
+      ..set('Upgrade', 'websocket', preserveHeaderCase: true)
+      ..set('Connection', 'Upgrade', preserveHeaderCase: true)
+      ..set('Sec-WebSocket-Key', key, preserveHeaderCase: true)
+      ..set('Sec-WebSocket-Version', '13', preserveHeaderCase: true)
+      ..set('Accept-Encoding', 'gzip', preserveHeaderCase: true)
+      ..set(
+        'User-Agent',
+        'okhttp/3.12.13.18',
+        preserveHeaderCase: true,
+      );
+
+    final response = await request.close();
+    if (response.statusCode != HttpStatus.switchingProtocols ||
+        response.headers.value(HttpHeaders.upgradeHeader)?.toLowerCase() !=
+            'websocket' ||
+        !(response.headers[HttpHeaders.connectionHeader] ?? const []).any(
+          (value) => value.toLowerCase() == 'upgrade',
+        )) {
+      final status = response.statusCode;
+      await response.drain<void>();
+      throw WebSocketException(
+        'SDK-compatible WebSocket upgrade failed (HTTP $status)',
+        status,
+      );
+    }
+
+    const guid = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+    final digest = SHA1Digest().process(
+      Uint8List.fromList(utf8.encode('$key$guid')),
+    );
+    final expectedAccept = base64Encode(digest);
+    if (response.headers.value('Sec-WebSocket-Accept') != expectedAccept) {
+      await response.drain<void>();
+      throw const WebSocketException('Invalid Sec-WebSocket-Accept response');
+    }
+
+    final socket = await response.detachSocket();
+    return WebSocket.fromUpgradedSocket(
+      socket,
+      serverSide: false,
+      compression: CompressionOptions.compressionOff,
+    );
+  }
 
   final _progressController = StreamController<ExportProgress>.broadcast();
   Stream<ExportProgress> get progress => _progressController.stream;
@@ -164,6 +271,7 @@ class WifiExportService {
   Completer<WifiEndpoint>? _wifiConfigCompleter;
   StreamSubscription<DecodedPacket>? _bleSub;
   WebSocketChannel? _ws;
+  HttpClient? _wsClient;
   StreamSubscription? _wsSub;
   RawDatagramSocket? _udp;
   Timer? _udpTimer;
@@ -174,6 +282,7 @@ class WifiExportService {
   int _sliceBytes = 0;
   int _expectedSize = 0;
   bool _cancelled = false;
+  Completer<void> _cancelSignal = Completer<void>();
   String? _activeFileId;
   bool _decryptEnabled = false;
   int _decryptedChunks = 0;
@@ -217,8 +326,11 @@ class WifiExportService {
     String? ssid,
     String? password,
     Duration timeout = const Duration(seconds: 45),
+    Duration startupDelay = softApStartupDelay,
+    Future<void> Function()? onConfigured,
   }) async {
     _cancelled = false;
+    _cancelSignal = Completer<void>();
     final creds = generateCredentials();
     final s = ssid ?? creds.ssid;
     final pw = password ?? creds.password;
@@ -259,12 +371,21 @@ class WifiExportService {
       _emit(
         _progress.copyWith(
           phase: ExportPhase.awaitJoin,
-          message: '请加入 SoftAP「$s」，然后继续',
+          message: '设备热点启动中…',
           endpoint: ep,
           ssid: s,
           password: pw,
         ),
       );
+      await _bleSub?.cancel();
+      _bleSub = null;
+      await onConfigured?.call();
+      await Future.any<void>([
+        Future<void>.delayed(startupDelay),
+        _cancelSignal.future,
+      ]);
+      if (_cancelled) throw StateError('已取消 Wi-Fi 导出');
+      _emit(_progress.copyWith(message: '设备热点已就绪，请加入「$s」'));
       return ep;
     } on TimeoutException {
       _emit(
@@ -285,7 +406,7 @@ class WifiExportService {
     bool useSsl = true,
   }) async {
     if (files.isEmpty) return const [];
-    _cancelled = false;
+    if (_cancelled) throw StateError('已取消 Wi-Fi 导出');
     final saved = <String>[];
 
     _emit(
@@ -334,6 +455,8 @@ class WifiExportService {
         }
       }
 
+      if (_cancelled) return saved;
+
       // Close transfer session
       try {
         _ws?.sink.add('FINISH');
@@ -353,6 +476,16 @@ class WifiExportService {
       );
       return saved;
     } catch (e) {
+      if (_cancelled) {
+        _emit(
+          _progress.copyWith(
+            phase: ExportPhase.idle,
+            message: '已取消导出',
+            clearError: true,
+          ),
+        );
+        return saved;
+      }
       _emit(
         _progress.copyWith(
           phase: ExportPhase.error,
@@ -369,11 +502,21 @@ class WifiExportService {
 
   Future<void> cancel() async {
     _cancelled = true;
-    if (!(_fileDone?.isCompleted ?? true)) {
-      _fileDone!.completeError(StateError('cancelled'));
+    if (!_cancelSignal.isCompleted) _cancelSignal.complete();
+    if (!(_wifiConfigCompleter?.isCompleted ?? true)) {
+      _wifiConfigCompleter!.completeError(StateError('cancelled'));
     }
-    await _teardownLink(closeDeviceWifi: true);
+    if (!(_fileDone?.isCompleted ?? true)) {
+      _fileDone!.complete();
+    }
     _emit(_progress.copyWith(phase: ExportPhase.idle, message: '已取消导出'));
+    // UI cancellation must not wait for a pending TLS handshake, WebSocket
+    // close frame, or BLE write after the Wi-Fi handoff dropped GATT.
+    unawaited(
+      _teardownLink(closeDeviceWifi: true).catchError((Object e) {
+        _log('cancel cleanup: $e');
+      }),
+    );
   }
 
   Future<void> closeSoftApOnly() async {
@@ -399,41 +542,64 @@ class WifiExportService {
   }
 
   Future<void> _connectWs(WifiEndpoint ep, {required bool useSsl}) async {
-    // Prefer scheme from useSsl; also try plain ws if wss fails.
-    final schemes = useSsl ? ['wss', 'ws'] : ['ws', 'wss'];
+    // Match the Soundcore SDK: retry the configured protocol three times, two
+    // seconds apart. Port 443 is WSS; falling back to plain WS only adds long
+    // waits and predictable connection resets.
+    final schemes = [useSsl ? 'wss' : 'ws'];
     Object? lastErr;
     for (final scheme in schemes) {
-      final url = '$scheme://${ep.ip}:${ep.port}';
-      _log('WS connect $url');
-      try {
-        final client = HttpClient();
-        client.badCertificateCallback = (cert, host, port) => true;
-        client.connectionTimeout = const Duration(seconds: 12);
-        final channel = IOWebSocketChannel.connect(
-          Uri.parse(url),
-          customClient: client,
-          pingInterval: const Duration(seconds: 15),
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        if (_cancelled) throw StateError('cancelled');
+        final url = '$scheme://${ep.ip}:${ep.port}';
+        _log('WS connect $url attempt $attempt/3');
+        _emit(
+          _progress.copyWith(
+            phase: ExportPhase.connectingWs,
+            message: '正在连接 WebSocket ${ep.displayEndpoint}…（$attempt/3）',
+          ),
         );
-        // Wait briefly for ready / first error
-        await channel.ready.timeout(const Duration(seconds: 15));
-        _ws = channel;
-        _rxBuffer.clear();
-        _wsSub = channel.stream.listen(
-          _onWsData,
-          onError: (e) => _log('WS error: $e'),
-          onDone: () => _log('WS closed'),
-          cancelOnError: false,
-        );
-        _log('WS connected via $url');
-        return;
-      } catch (e) {
-        lastErr = e;
-        _log('WS $url failed: $e');
-        await _wsSub?.cancel();
+        WebSocketChannel? candidate;
+        HttpClient? client;
         try {
-          await _ws?.sink.close();
-        } catch (_) {}
-        _ws = null;
+          client = HttpClient();
+          client.badCertificateCallback = (cert, host, port) => true;
+          client.connectionTimeout = const Duration(seconds: 12);
+          _wsClient = client;
+          final socket = connectSdkWebSocket(url, client);
+          candidate = IOWebSocketChannel(socket);
+          _ws = candidate;
+          await Future.any<void>([
+            candidate.ready.timeout(webSocketReadyTimeout),
+            _cancelSignal.future,
+          ]);
+          if (_cancelled) throw StateError('cancelled');
+          _rxBuffer.clear();
+          _wsSub = candidate.stream.listen(
+            _onWsData,
+            onError: (e) => _log('WS error: $e'),
+            onDone: () => _log('WS closed'),
+            cancelOnError: false,
+          );
+          _log('WS connected via $url');
+          return;
+        } catch (e) {
+          lastErr = e;
+          _log('WS $url attempt $attempt failed: $e');
+          try {
+            await candidate?.sink.close().timeout(const Duration(seconds: 1));
+          } catch (_) {}
+          client?.close(force: true);
+          if (identical(_wsClient, client)) _wsClient = null;
+          if (identical(_ws, candidate)) _ws = null;
+          if (_cancelled) throw StateError('cancelled');
+          if (attempt < 3) {
+            await Future.any<void>([
+              Future<void>.delayed(webSocketRetryDelay),
+              _cancelSignal.future,
+            ]);
+            if (_cancelled) throw StateError('cancelled');
+          }
+        }
       }
     }
     throw StateError('WebSocket connect failed: $lastErr');
@@ -770,16 +936,26 @@ class WifiExportService {
     } catch (_) {}
     _udp = null;
 
-    await _wsSub?.cancel();
+    final wsSub = _wsSub;
     _wsSub = null;
-    try {
-      await _ws?.sink.close();
-    } catch (_) {}
+    final ws = _ws;
     _ws = null;
+    final wsClient = _wsClient;
+    _wsClient = null;
+    // Force-closing the client interrupts a pending DNS/TCP/TLS handshake.
+    wsClient?.close(force: true);
+    try {
+      await wsSub?.cancel().timeout(const Duration(seconds: 1));
+    } catch (_) {}
+    try {
+      await ws?.sink.close().timeout(const Duration(seconds: 1));
+    } catch (_) {}
 
     if (closeDeviceWifi) {
       try {
-        await bleWrite(DeviceCommands.closeWifiMode());
+        await bleWrite(
+          DeviceCommands.closeWifiMode(),
+        ).timeout(const Duration(seconds: 1));
       } catch (e) {
         _log('closeWifiMode: $e');
       }

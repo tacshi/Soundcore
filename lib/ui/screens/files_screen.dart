@@ -397,6 +397,8 @@ class _DeviceFilesTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.watch<RecorderController>();
+    final downloadableCount = c.unexportedFiles.length;
+    final selectedDownloadableCount = c.selectedUnexportedFiles.length;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -406,10 +408,12 @@ class _DeviceFilesTab extends StatelessWidget {
             children: [
               Expanded(
                 child: AccentButton(
-                  label: '全部导出（Wi‑Fi）',
-                  icon: Icons.download_rounded,
+                  label: downloadableCount == 0 ? '全部已导出' : '全部导出（Wi‑Fi）',
+                  icon: downloadableCount == 0
+                      ? Icons.download_done_rounded
+                      : Icons.download_rounded,
                   color: AppColors.mint,
-                  onPressed: c.connected && c.files.isNotEmpty && !busy
+                  onPressed: c.connected && downloadableCount > 0 && !busy
                       ? () => startWifiExport(context, c)
                       : null,
                 ),
@@ -457,11 +461,18 @@ class _DeviceFilesTab extends StatelessWidget {
             children: [
               Expanded(
                 child: FilledButton.icon(
-                  onPressed: busy || c.selectedFileIds.isEmpty
+                  onPressed: busy || selectedDownloadableCount == 0
                       ? null
                       : () => startWifiExport(context, c),
-                  icon: const Icon(Icons.download_rounded, size: 18),
-                  label: const Text('导出所选'),
+                  icon: Icon(
+                    selectedDownloadableCount == 0
+                        ? Icons.download_done_rounded
+                        : Icons.download_rounded,
+                    size: 18,
+                  ),
+                  label: Text(
+                    selectedDownloadableCount == 0 ? '所选已导出' : '导出所选',
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
@@ -937,7 +948,7 @@ class _WifiJoinSheetState extends State<_WifiJoinSheet> {
   @override
   void initState() {
     super.initState();
-    // Poll SoftAP every 2s; auto-start transfer once the host is reachable.
+    // Match the SDK's Wi-Fi check without opening the device's WSS port first.
     _probeTimer = Timer.periodic(const Duration(seconds: 2), (_) => _probe());
     WidgetsBinding.instance.addPostFrameCallback((_) => _probe());
   }
@@ -951,7 +962,7 @@ class _WifiJoinSheetState extends State<_WifiJoinSheet> {
   Future<void> _probe() async {
     if (!mounted || _running || _probing) return;
     _probing = true;
-    final ok = await widget.controller.probeSoftApReachable();
+    final ok = await widget.controller.isOnSoftApNetwork();
     if (!mounted) return;
     _probing = false;
     if (ok != _reachable) {
@@ -1194,7 +1205,7 @@ class _WifiJoinSheetState extends State<_WifiJoinSheet> {
             const SizedBox(height: 8),
             const Text(
               '加入成功后会自动开始导出；也可手动点下方按钮。'
-              '端点 192.168.43.x 为设备热点网关，说明 SoftAP 指令已成功。',
+              '检测仅检查本机网络，不会提前占用设备的 WebSocket 端口。',
               style: TextStyle(color: AppColors.textMuted, fontSize: 11),
             ),
             // Only shown before the first (automatic) attempt — once that's
@@ -1266,12 +1277,10 @@ class _WifiJoinSheetState extends State<_WifiJoinSheet> {
               label: '取消导出',
               filled: false,
               color: AppColors.textMuted,
-              onPressed: transferring
-                  ? null
-                  : () async {
-                      await c.cancelWifiExport();
-                      if (context.mounted) Navigator.of(context).pop();
-                    },
+              onPressed: () async {
+                await c.cancelWifiExport();
+                if (context.mounted) Navigator.of(context).pop();
+              },
             ),
           ],
         ),

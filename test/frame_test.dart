@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:anker_recorder/protocol/commands.dart';
@@ -82,6 +85,194 @@ void main() {
     expect(ep, isNotNull);
     expect(ep!.ip, '192.168.4.1');
     expect(ep.port, 8080);
+  });
+
+  test('SoftAP handoff uses SDK 10-second readiness delay', () async {
+    expect(WifiExportService.softApStartupDelay, const Duration(seconds: 10));
+
+    final packets = StreamController<DecodedPacket>();
+    var disconnectedBle = false;
+    final body = <int>[
+      0x09,
+      0xFF,
+      0x00,
+      0x00,
+      0x01,
+      0x1A,
+      0x05,
+      0x10,
+      0x00,
+      0x01,
+      0x2B,
+      0xA8,
+      0xC0,
+      0xBB,
+      0x01,
+    ];
+    final packet = DecodedPacket.fromBytes([
+      ...body,
+      ProtocolFrame.checksum(body),
+    ]);
+    final service = WifiExportService(
+      blePackets: packets.stream,
+      bleWrite: (frame) async {
+        if (frame[5] == 0x1A && frame[6] == 0x05) {
+          scheduleMicrotask(() => packets.add(packet));
+        }
+      },
+    );
+
+    final endpoint = await service.openSoftAp(
+      startupDelay: Duration.zero,
+      onConfigured: () async => disconnectedBle = true,
+    );
+
+    expect(disconnectedBle, isTrue);
+    expect(endpoint.displayEndpoint, '192.168.43.1:443');
+    await packets.close();
+    await service.dispose();
+  });
+
+  test('SoftAP detection uses local subnet without probing device port', () {
+    expect(
+      WifiExportService.sharesIpv4Subnet('192.168.43.1', [
+        '10.0.0.4',
+        '192.168.43.2',
+      ]),
+      isTrue,
+    );
+    expect(
+      WifiExportService.sharesIpv4Subnet('192.168.43.1', [
+        '192.168.42.2',
+        '127.0.0.1',
+      ]),
+      isFalse,
+    );
+  });
+
+  test('Wi-Fi cancellation does not wait for BLE cleanup', () async {
+    final pendingBleClose = Completer<void>();
+    final service = WifiExportService(
+      blePackets: const Stream<DecodedPacket>.empty(),
+      bleWrite: (_) => pendingBleClose.future,
+    );
+
+    final winner = await Future.any<String>([
+      service.cancel().then((_) => 'cancelled'),
+      pendingBleClose.future.then((_) => 'cleanup'),
+    ]).timeout(const Duration(seconds: 1));
+
+    expect(winner, 'cancelled');
+    pendingBleClose.complete();
+    await service.dispose();
+  });
+
+  test('device WebSocket handshake matches SDK headers', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final receivedHeaders = Completer<HttpHeaders>();
+    server.listen((request) async {
+      receivedHeaders.complete(request.headers);
+      final socket = await WebSocketTransformer.upgrade(request);
+      await socket.done;
+    });
+
+    final client = HttpClient();
+    final socket = await WifiExportService.connectSdkWebSocket(
+      'ws://${server.address.address}:${server.port}',
+      client,
+    );
+    final headers = await receivedHeaders.future;
+    final headerNames = <String>{};
+    headers.forEach((name, _) => headerNames.add(name.toLowerCase()));
+
+    expect(
+      headerNames,
+      equals({
+        'host',
+        'upgrade',
+        'connection',
+        'sec-websocket-key',
+        'sec-websocket-version',
+        'accept-encoding',
+        'user-agent',
+      }),
+    );
+    expect(headers.value(HttpHeaders.upgradeHeader), 'websocket');
+    expect(headers.value(HttpHeaders.connectionHeader), 'Upgrade');
+    expect(headers.value('Sec-WebSocket-Version'), '13');
+    expect(headers.value('Sec-WebSocket-Key'), isNotEmpty);
+    expect(headers.value('Sec-WebSocket-Extensions'), isNull);
+    expect(headers.value(HttpHeaders.cacheControlHeader), isNull);
+    // The SDK's OkHttp client (BridgeInterceptor) always sends these two —
+    // the device's embedded WS server gates the upgrade on seeing them.
+    expect(headers.value(HttpHeaders.acceptEncodingHeader), 'gzip');
+    expect(headers.value(HttpHeaders.userAgentHeader), 'okhttp/3.12.13.18');
+
+    await socket.close();
+    client.close(force: true);
+    await server.close(force: true);
+  });
+
+  test('device WebSocket handshake uses canonical header casing on the wire', () async {
+    // HttpServer/HttpHeaders normalizes names to lowercase on receipt, so it
+    // can't catch a casing regression — read the raw bytes instead. The
+    // recorder's embedded parser is assumed to match header names
+    // case-sensitively, the same way OkHttp emits them.
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final rawBytes = <int>[];
+    final headSeen = Completer<void>();
+    late Socket accepted;
+    server.listen((socket) {
+      accepted = socket;
+      socket.listen((data) {
+        rawBytes.addAll(data);
+        if (utf8.decode(rawBytes, allowMalformed: true).contains('\r\n\r\n')) {
+          if (!headSeen.isCompleted) headSeen.complete();
+        }
+      });
+    });
+
+    final client = HttpClient();
+    unawaited(
+      () async {
+        try {
+          await WifiExportService.connectSdkWebSocket(
+            'ws://${server.address.address}:${server.port}',
+            client,
+          );
+        } catch (_) {
+          // The raw socket never sends a 101 response, so the handshake
+          // rejects once the connection is torn down — expected here.
+        }
+      }(),
+    );
+
+    await headSeen.future.timeout(const Duration(seconds: 5));
+    final raw = utf8.decode(rawBytes, allowMalformed: true);
+
+    for (final header in [
+      'Host:',
+      'Upgrade: websocket',
+      'Connection: Upgrade',
+      'Sec-WebSocket-Key:',
+      'Sec-WebSocket-Version: 13',
+      'Accept-Encoding: gzip',
+      'User-Agent: okhttp/3.12.13.18',
+    ]) {
+      expect(
+        raw.contains(header),
+        isTrue,
+        reason: 'expected literal "$header" in request:\n$raw',
+      );
+    }
+    // No lowercase-only duplicates from dart:io's default serialization.
+    expect(raw.contains('upgrade: websocket'), isFalse);
+    expect(raw.contains('sec-websocket-key:'), isFalse);
+    expect(raw.contains('user-agent:'), isFalse);
+
+    client.close(force: true);
+    await accepted.close();
+    await server.close();
   });
 
   test('file header request hex is 18 bytes', () {

@@ -81,6 +81,8 @@
 	<string>Soundcore Manager uses Bluetooth to find and manage your soundcore Work device.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Soundcore Manager uses Bluetooth to find and manage your soundcore Work device.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Soundcore Manager connects directly to your recorder's Wi-Fi hotspot to export recordings.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>bluetooth-central</string>
