@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:anker_recorder/protocol/commands.dart';
 import 'package:anker_recorder/protocol/frame.dart';
 import 'package:anker_recorder/protocol/models.dart';
@@ -124,5 +126,31 @@ void main() {
     expect(unbind[9], 0x00);
     expect(ProtocolFrame.verifyChecksum(bind), isTrue);
     expect(ProtocolFrame.verifyChecksum(unbind), isTrue);
+  });
+
+  test('D3200 file-list request uses end-time transport and parses page', () {
+    final request = DeviceCommands.listFilesWithEndTime(page: 2);
+    expect(request[5], 0x1B);
+    expect(request[6], 0x0E);
+    expect(request.sublist(9, 11), [2, 0]);
+
+    final page = OfflineFileList.parse(
+      Uint8List.fromList([
+        1, 0, // file count
+        100, 0, 0, 0, // file id
+        200, 0, 0, 0, // end time
+        44, 1, 0, 0, // size: 300
+        144, 1, 0, 0, // current transport timestamp: 400
+        244, 1, 0, 0, // current transport duration: 500
+      ]),
+      withEndTime: true,
+    );
+
+    expect(page.fileCount, 1);
+    expect(page.files.single.fileId, 100);
+    expect(page.files.single.endTime, 200);
+    expect(page.files.single.sizeBytes, 300);
+    expect(page.currentTransportTimestamp, 400);
+    expect(page.currentTransportDuration, 500);
   });
 }

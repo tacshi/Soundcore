@@ -46,6 +46,9 @@ class ExportCatalog {
   }
 
   static bool _prefer(String candidate, String current) {
+    final candidatePlayable = candidate.endsWith('.wav');
+    final currentPlayable = current.endsWith('.wav');
+    if (candidatePlayable != currentPlayable) return candidatePlayable;
     final candidateRaw = candidate.endsWith('.opus.bin');
     final currentRaw = current.endsWith('.opus.bin');
     if (candidateRaw != currentRaw) return !candidateRaw;

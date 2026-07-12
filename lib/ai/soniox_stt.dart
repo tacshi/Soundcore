@@ -108,6 +108,7 @@ class SonioxSttService {
       'model': _model,
       'file_id': fileId,
       'enable_language_identification': true,
+      'enable_speaker_diarization': true,
       'context': {
         'terms': ['soundcore Work', 'Anker', '录音豆', 'D3200'],
         'general': [
@@ -179,18 +180,12 @@ class SonioxSttService {
       throw StateError('Soniox transcript HTTP ${res.statusCode}: ${res.body}');
     }
     final json = jsonDecode(res.body) as Map<String, dynamic>;
-    // Prefer top-level text; else stitch tokens.
-    final direct = '${json['text'] ?? ''}'.trim();
-    if (direct.isNotEmpty) return direct;
     final tokens = json['tokens'];
     if (tokens is List) {
-      final buf = StringBuffer();
-      for (final t in tokens) {
-        if (t is Map && t['text'] != null) buf.write(t['text']);
-      }
-      return buf.toString().trim();
+      final rendered = renderSonioxTokens(tokens);
+      if (rendered.isNotEmpty) return rendered;
     }
-    return '';
+    return '${json['text'] ?? ''}'.trim();
   }
 
   Future<void> _delete(String url) async {

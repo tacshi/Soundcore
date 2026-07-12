@@ -5,6 +5,13 @@ import 'package:anker_recorder/audio/ogg_opus.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('recognizes a standard WAV header', () {
+    final header = Uint8List(44);
+    header.setAll(0, 'RIFF'.codeUnits);
+    header.setAll(8, 'WAVE'.codeUnits);
+    expect(OggOpus.isWav(header), isTrue);
+  });
+
   test('mux raw 160-byte frames yields OggS', () {
     final frames = 10;
     final raw = Uint8List(frames * OggOpus.frameSize);

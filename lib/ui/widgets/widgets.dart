@@ -164,34 +164,41 @@ class BatteryRing extends StatelessWidget {
       height: size,
       child: CustomPaint(
         painter: _RingPainter(progress: p, color: color),
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (charging)
-                const Icon(
-                  Icons.bolt_rounded,
-                  color: AppColors.amber,
-                  size: 16,
+        child: Padding(
+          padding: EdgeInsets.all(size * 0.14),
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (charging)
+                  const Icon(
+                    Icons.bolt_rounded,
+                    color: AppColors.amber,
+                    size: 14,
+                  ),
+                Text(
+                  '$percent%',
+                  style: TextStyle(
+                    fontSize: size * 0.21,
+                    height: 1,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
+                    letterSpacing: -0.5,
+                  ),
                 ),
-              Text(
-                '$percent%',
-                style: TextStyle(
-                  fontSize: size * 0.22,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.textPrimary,
-                  letterSpacing: -0.5,
+                const SizedBox(height: 3),
+                Text(
+                  charging ? '充电中' : '电量',
+                  style: TextStyle(
+                    fontSize: size * 0.1,
+                    height: 1,
+                    color: AppColors.textMuted,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
-              ),
-              Text(
-                charging ? '充电中' : '电量',
-                style: TextStyle(
-                  fontSize: 10,
-                  color: AppColors.textMuted,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

@@ -66,6 +66,7 @@ class SonioxSttStreamSession implements SttStreamSession {
       'num_channels': 1,
       'language_hints': hints,
       'enable_language_identification': true,
+      'enable_speaker_diarization': true,
       'enable_endpoint_detection': true,
       'max_endpoint_delay_ms': 1000,
       'context': {
@@ -211,21 +212,7 @@ class SonioxSttStreamSession implements SttStreamSession {
   static String _renderTokens(
     List<Map<String, dynamic>> finals,
     List<Map<String, dynamic>> nonFinals,
-  ) {
-    final buf = StringBuffer();
-    for (final t in [...finals, ...nonFinals]) {
-      // Ignore translation channel if present.
-      if (t['translation_status'] == 'translation') continue;
-      final piece = '${t['text'] ?? ''}';
-      // Soniox endpoint token → newline (normalized further below).
-      if (RegExp(r'^<end>$', caseSensitive: false).hasMatch(piece.trim())) {
-        buf.write('\n');
-      } else {
-        buf.write(piece);
-      }
-    }
-    return normalizeSttText(buf.toString());
-  }
+  ) => renderSonioxTokens([...finals, ...nonFinals]);
 
   void _emit(SttStreamEvent e) {
     if (!_events.isClosed) _events.add(e);

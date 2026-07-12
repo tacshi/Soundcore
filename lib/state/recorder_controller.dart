@@ -15,6 +15,7 @@ import '../ai/xai_stt.dart';
 import '../ai/xai_stt_stream.dart';
 import '../audio/ogg_opus.dart';
 import '../audio/opus_pcm_decoder.dart';
+import '../audio/opus_wave.dart';
 import '../ble/ble_service.dart';
 import '../ble/ble_file_pull.dart';
 import '../ble/realtime_stream.dart';
@@ -61,6 +62,10 @@ class RecorderController extends ChangeNotifier {
             }
           }
         }
+        // Bound devices reconnect independently of the scan sheet. Previously
+        // auto-connect only lived in that sheet, so a persisted bound device
+        // stayed offline until the user opened it manually.
+        unawaited(_tryAutoConnectBoundDevice(list));
         notifyListeners();
       }),
     );
@@ -143,7 +148,6 @@ class RecorderController extends ChangeNotifier {
     if (s.sonioxApiKey != null) _sonioxStt.apiKeyOverride = s.sonioxApiKey;
     autoTranscribe = s.autoTranscribe;
     autoRealtime = s.autoRealtime;
-    showAllDevices = s.showAllDevices;
     transcriptLanguage = s.transcriptLanguage;
     // Prefer saved provider when its key is available; else pick configured one.
     final xai = _xaiStt.isConfigured;
@@ -154,10 +158,11 @@ class RecorderController extends ChangeNotifier {
       sttProvider = SttProvider.xai;
     } else if (soniox && !xai) {
       sttProvider = SttProvider.soniox;
-    } else {
+    } else if (xai && !soniox) {
       sttProvider = SttProvider.xai;
+    } else {
+      sttProvider = SttProvider.soniox;
     }
-    _ble.filterSoundcoreOnly = !showAllDevices;
     notifyListeners();
   }
 
@@ -169,7 +174,6 @@ class RecorderController extends ChangeNotifier {
         sttProvider: sttProvider,
         autoTranscribe: autoTranscribe,
         autoRealtime: autoRealtime,
-        showAllDevices: showAllDevices,
         transcriptLanguage: transcriptLanguage,
       ),
     );
@@ -184,6 +188,42 @@ class RecorderController extends ChangeNotifier {
     // Surface on Device tab even before this session connects.
     activeDevice ??= lastKnownDevice;
     notifyListeners();
+    if (saved.bound && saved.device != null) {
+      unawaited(_startBoundDeviceReconnect());
+    }
+  }
+
+  Future<void> _startBoundDeviceReconnect() async {
+    if (connected || phase == AppPhase.connecting || _ble.isConnecting) return;
+    statusMessage = '正在自动连接已绑定设备…';
+    await startScan();
+  }
+
+  Future<void> _tryAutoConnectBoundDevice(List<ScannedDevice> scanned) async {
+    if (!bound ||
+        connected ||
+        phase == AppPhase.connecting ||
+        _ble.isConnecting) {
+      return;
+    }
+    final saved = lastKnownDevice;
+    if (saved == null) return;
+
+    ScannedDevice? target;
+    for (final candidate in scanned) {
+      final sameId = candidate.id == saved.id;
+      final sameMac =
+          saved.macAddress != null &&
+          candidate.macAddress != null &&
+          candidate.macAddress == saved.macAddress;
+      if (sameId || sameMac) {
+        target = candidate;
+        break;
+      }
+    }
+    if (target == null) return;
+
+    await connect(target);
   }
 
   Future<void> _persistDevice() async {
@@ -234,6 +274,7 @@ class RecorderController extends ChangeNotifier {
     }
     // When a session finishes with data, keep path listed for playback + final STT.
     if (!s.active && s.path != null && s.bytesReceived > 0) {
+      unawaited(_convertExportToWav(s.path!));
       statusMessage =
           '实时录音已保存 ${s.path!.split('/').last}（${(s.bytesReceived / 1024).toStringAsFixed(1)} KB）';
       // Attach any live transcript we already have to this file card.
@@ -810,7 +851,7 @@ class RecorderController extends ChangeNotifier {
   bool autoTranscribe = true;
 
   /// Active STT backend (xAI or Soniox).
-  SttProvider sttProvider = SttProvider.xai;
+  SttProvider sttProvider = SttProvider.soniox;
   String transcriptLanguage =
       'zh'; // formatting hint; zh may fall back if unsupported
   String transcript = '';
@@ -860,7 +901,7 @@ class RecorderController extends ChangeNotifier {
   /// ECDH session established (needed to decrypt exports).
   bool encryptReady = false;
 
-  /// Local exported paths (decrypted .opus when possible).
+  /// Local exported paths (standard WAV when decryption succeeds).
   List<String> exportedPaths = [];
 
   /// fileId → local path after Wi‑Fi export.
@@ -937,16 +978,7 @@ class RecorderController extends ChangeNotifier {
     return WifiExportService.probeEndpoint(ep);
   }
 
-  /// Debug: list all BLE ads, not only soundcore / D3200.
-  bool showAllDevices = false;
   int get adsSeen => _ble.adsSeen;
-
-  void setShowAllDevices(bool value) {
-    showAllDevices = value;
-    _ble.filterSoundcoreOnly = !value;
-    notifyListeners();
-    unawaited(_persistSettings());
-  }
 
   void toggleSelecting() {
     selecting = !selecting;
@@ -992,13 +1024,10 @@ class RecorderController extends ChangeNotifier {
     errorMessage = null;
     phase = AppPhase.scanning;
     statusMessage = '正在检查蓝牙…';
-    _ble.filterSoundcoreOnly = !showAllDevices;
     notifyListeners();
     try {
       await _ble.startScan(timeout: const Duration(seconds: 30));
-      statusMessage = showAllDevices
-          ? '正在扫描全部 BLE 设备…'
-          : '正在扫描 soundcore Work（D3200）…';
+      statusMessage = '正在扫描 soundcore Work（D3200）…';
       notifyListeners();
     } catch (e) {
       errorMessage = e.toString().replaceFirst(
@@ -1014,8 +1043,8 @@ class RecorderController extends ChangeNotifier {
   Future<void> stopScan() async {
     await _ble.stopScan();
     if (!connected) phase = AppPhase.idle;
-    statusMessage = devices.isEmpty && adsSeen > 0 && !showAllDevices
-        ? '已见 $adsSeen 条 BLE 广播，无匹配 D3200 — 可尝试「全部 BLE」或重启录音豆'
+    statusMessage = devices.isEmpty && adsSeen > 0
+        ? '已见 $adsSeen 条 BLE 广播，无匹配 D3200 — 请重启录音豆后重试'
         : null;
     notifyListeners();
   }
@@ -1040,8 +1069,11 @@ class RecorderController extends ChangeNotifier {
       phase = AppPhase.ready;
       statusMessage = '已连接';
       lastKnownDevice = d;
-      // Advertisement bind bit (Feishu flag) — may already be bound to a phone.
-      if (d.isBoundAdvertised) bound = true;
+      // D3200 treats the first successful GATT connection as ownership: after
+      // connecting it stops discoverable advertising to other hosts even when
+      // no separate bind command was sent. Persist that observed device state
+      // so only this exact recorder is eligible for automatic reconnection.
+      bound = true;
       unawaited(_persistDevice());
       notifyListeners();
       await Future<void>.delayed(const Duration(milliseconds: 300));
@@ -1052,8 +1084,14 @@ class RecorderController extends ChangeNotifier {
       await Future<void>.delayed(const Duration(milliseconds: 300));
       await establishEncryptSession();
       _startBatteryPoll();
+      // Home may already be visible before an iOS connection completes, so its
+      // initial tab refresh has already returned while disconnected. Always
+      // request the device inventory once the GATT session is fully ready.
+      await listFiles();
       // If the bean is already recording, start BLE realtime pull automatically.
-      await _maybeStartAutoRealtime(reason: 'connected');
+      if (recording || info?.recording == true) {
+        await _maybeStartAutoRealtime(reason: 'connected');
+      }
     } catch (e) {
       // Prefer cleaned message from BleService / strip noisy prefixes.
       errorMessage = e.toString().replaceFirst(
@@ -1070,6 +1108,7 @@ class RecorderController extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
+    _postBindFileRefreshTimer?.cancel();
     _stopBatteryPoll();
     await _wifi.cancel();
     await stopPlayback();
@@ -1368,8 +1407,66 @@ class RecorderController extends ChangeNotifier {
     }
   }
 
-  Future<void> listFiles() =>
-      _send(DeviceCommands.listFiles(), label: '正在获取录音列表…');
+  var _fileListPage = 0;
+  var _loadingFileListPages = false;
+  final List<OfflineFileEntry> _fileListPages = [];
+
+  Future<void> listFiles() {
+    _fileListPage = 0;
+    _fileListPages.clear();
+    _loadingFileListPages = true;
+    // The D3200 SDK's public getAllAudioRecordFiles() uses 1B/0E and fetches
+    // subsequent pages whenever a response contains the full 10 entries.
+    return _send(
+      DeviceCommands.listFilesWithEndTime(page: _fileListPage),
+      label: '正在获取录音列表…',
+    );
+  }
+
+  void _handleFileListPage(OfflineFileList list) {
+    if (!_loadingFileListPages) {
+      files = _sortFilesNewestFirst(list.files);
+      statusMessage = '${files.length} 条录音';
+      _kickRealtimeFromFileList(list);
+      _scheduleAutoTransferMissing();
+      return;
+    }
+
+    final byId = <int, OfflineFileEntry>{
+      for (final file in _fileListPages) file.fileId: file,
+      for (final file in list.files) file.fileId: file,
+    };
+    _fileListPages
+      ..clear()
+      ..addAll(byId.values);
+    files = _sortFilesNewestFirst(_fileListPages);
+
+    if (list.fileCount == 10) {
+      _fileListPage++;
+      statusMessage = '正在获取录音列表…（${files.length} 条）';
+      notifyListeners();
+      unawaited(
+        Future<void>.delayed(const Duration(milliseconds: 50), () async {
+          if (!connected || !_loadingFileListPages) return;
+          try {
+            await _ble.writeCommand(
+              DeviceCommands.listFilesWithEndTime(page: _fileListPage),
+            );
+          } catch (error) {
+            _loadingFileListPages = false;
+            errorMessage = '获取录音列表第 ${_fileListPage + 1} 页失败：$error';
+            notifyListeners();
+          }
+        }),
+      );
+      return;
+    }
+
+    _loadingFileListPages = false;
+    statusMessage = '${files.length} 条录音';
+    _kickRealtimeFromFileList(list);
+    _scheduleAutoTransferMissing();
+  }
 
   /// Auto-refresh offline file inventory when the Files tab is shown.
   /// Skips if disconnected, mid-export, or already busy on the wire.
@@ -1425,7 +1522,7 @@ class RecorderController extends ChangeNotifier {
         try {
           statusMessage = '自动传输 ${i + 1}/${missing.length} · ${file.title}';
           notifyListeners();
-          final path = await _blePull.pullFile(
+          final rawPath = await _blePull.pullFile(
             file,
             onProgress: (received, expected) {
               final now = DateTime.now();
@@ -1442,6 +1539,7 @@ class RecorderController extends ChangeNotifier {
               notifyListeners();
             },
           );
+          final path = await _convertExportToWav(rawPath, register: false);
           _registerExportedPaths([path]);
           exported++;
           notifyListeners();
@@ -1513,7 +1611,7 @@ class RecorderController extends ChangeNotifier {
       await for (final entity in dir.list(followLinks: false)) {
         if (entity is! File) continue;
         final name = p.basename(entity.path);
-        if (RegExp(r'^\d+\.opus(?:\.bin)?$').hasMatch(name)) {
+        if (RegExp(r'^\d+\.(?:wav|opus(?:\.bin)?)$').hasMatch(name)) {
           paths.add(entity.path);
         }
       }
@@ -1555,7 +1653,10 @@ class RecorderController extends ChangeNotifier {
 
         final transcript = transcriptForPath(path)?.trim();
         if (transcript != null && transcript.isNotEmpty) {
-          final stem = name.replaceFirst(RegExp(r'\.opus(?:\.bin)?$'), '');
+          final stem = name.replaceFirst(
+            RegExp(r'\.(?:wav|opus(?:\.bin)?)$'),
+            '',
+          );
           final textTarget = File(p.join(destination.path, '$stem.txt'));
           await textTarget.writeAsString(
             normalizeSttText(transcript),
@@ -1576,6 +1677,59 @@ class RecorderController extends ChangeNotifier {
     return (audios: audios, transcripts: transcripts, failed: failed);
   }
 
+  Future<({int deleted, List<String> failed})> deleteLocalExports(
+    Iterable<String> paths,
+  ) async {
+    final selected = paths.toSet();
+    var deleted = 0;
+    final failed = <String>[];
+
+    for (final path in selected) {
+      final id = ExportCatalog.fileIdFromPath(path);
+      final logicalPaths = id == null
+          ? <String>{path}
+          : <String>{
+              path,
+              p.join(p.dirname(path), '$id.wav'),
+              p.join(p.dirname(path), '$id.opus'),
+              p.join(p.dirname(path), '$id.ogg'),
+              p.join(p.dirname(path), '$id.opus.bin'),
+            };
+      try {
+        if (playingPath == path || (id != null && playingFileId == id)) {
+          await stopPlayback();
+        }
+        for (final candidate in logicalPaths) {
+          final file = File(candidate);
+          if (await file.exists()) await file.delete();
+          transcriptsByPath.remove(candidate);
+        }
+        if (id != null) transcriptsByFileId.remove(id);
+        deleted++;
+      } catch (error) {
+        failed.add('${p.basename(path)}: $error');
+      }
+    }
+
+    exportedPaths.removeWhere((path) {
+      final id = ExportCatalog.fileIdFromPath(path);
+      return selected.contains(path) ||
+          (id != null &&
+              selected.any((item) => ExportCatalog.fileIdFromPath(item) == id));
+    });
+    _registerExportedPaths(exportedPaths);
+    if (expandedLocalPath != null && selected.contains(expandedLocalPath)) {
+      expandedLocalPath = null;
+    }
+    await _persistTranscripts();
+    statusMessage = failed.isEmpty
+        ? '已删除 $deleted 个本地录音'
+        : '已删除 $deleted 个录音，${failed.length} 个失败';
+    errorMessage = failed.isEmpty ? null : failed.join('\n');
+    notifyListeners();
+    return (deleted: deleted, failed: failed);
+  }
+
   void _registerExportedPaths(Iterable<String> paths) {
     exportedPaths = ExportCatalog.newestPathsFirst([
       ...exportedPaths,
@@ -1588,12 +1742,69 @@ class RecorderController extends ChangeNotifier {
     }
   }
 
+  Future<String> _convertExportToWav(
+    String path, {
+    bool register = true,
+  }) async {
+    if (!path.endsWith('.opus')) return path;
+    try {
+      final wavPath = await OpusWave.convertRawFile(path);
+      if (register) {
+        _registerExportedPaths([wavPath]);
+        notifyListeners();
+      }
+      return wavPath;
+    } catch (error) {
+      debugPrint('[Exports] WAV conversion failed for $path: $error');
+      return path;
+    }
+  }
+
   Future<void> deleteFile(int fileId) =>
       _send(DeviceCommands.deleteFile(fileId), label: '正在删除文件…');
+
+  Future<int> deleteSelectedDeviceFiles() async {
+    if (!_ble.isConnected || selectedFileIds.isEmpty) return 0;
+    final ids = selectedFileIds.toList();
+    phase = AppPhase.busy;
+    errorMessage = null;
+    var deleted = 0;
+    notifyListeners();
+    try {
+      for (var i = 0; i < ids.length; i++) {
+        statusMessage = '正在删除 ${i + 1}/${ids.length}…';
+        notifyListeners();
+        await _ble.writeCommand(DeviceCommands.deleteFile(ids[i]));
+        deleted++;
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      }
+      files.removeWhere((file) => ids.contains(file.fileId));
+      selectedFileIds.clear();
+      selecting = false;
+      statusMessage = '已删除 $deleted 个设备端录音';
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      await _ble.writeCommand(DeviceCommands.listFiles());
+    } catch (error) {
+      errorMessage = '批量删除失败：$error';
+    } finally {
+      phase = connected ? AppPhase.ready : AppPhase.idle;
+      notifyListeners();
+    }
+    return deleted;
+  }
 
   /// Last bind/unbind we sent: true=bind, false=unbind, null=unknown.
   /// Feishu uses the same RX id (0x87) for both; we need this to interpret ACKs.
   bool? _pendingBindRequest;
+  Timer? _postBindFileRefreshTimer;
+
+  void _schedulePostBindFileRefresh() {
+    _postBindFileRefreshTimer?.cancel();
+    _postBindFileRefreshTimer = Timer(const Duration(milliseconds: 700), () {
+      if (!connected || !bound || isExporting || needsWifiJoin) return;
+      unawaited(listFiles());
+    });
+  }
 
   Future<void> bindDevice() async {
     _pendingBindRequest = true;
@@ -1604,6 +1815,7 @@ class RecorderController extends ChangeNotifier {
   /// Safe: does not factory-reset or wipe recordings. Feishu disconnects BLE
   /// after a successful unbind ACK; you can scan + connect + bind again.
   Future<void> unbindDevice() async {
+    _postBindFileRefreshTimer?.cancel();
     _pendingBindRequest = false;
     await _send(DeviceCommands.unbind(), label: '正在解绑…');
   }
@@ -1682,7 +1894,11 @@ class RecorderController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final paths = await _wifi.transferFiles(endpoint: ep, files: targets);
+      final rawPaths = await _wifi.transferFiles(endpoint: ep, files: targets);
+      final paths = <String>[];
+      for (final path in rawPaths) {
+        paths.add(await _convertExportToWav(path, register: false));
+      }
       _registerExportedPaths(paths);
       phase = AppPhase.ready;
       statusMessage = paths.isEmpty
@@ -1731,8 +1947,8 @@ class RecorderController extends ChangeNotifier {
 
   /// Load local [path] and start playback. Tapping the same track pauses.
   ///
-  /// D3200 exports are raw 160-byte Opus frames (not Ogg). We mux to `.ogg`
-  /// before handing off to just_audio / AVPlayer.
+  /// Completed exports are standard WAV. Legacy raw Opus files are still muxed
+  /// to Ogg on demand for playback compatibility.
   Future<void> playExported(String path, {int? fileId}) async {
     try {
       final file = File(path);
@@ -1911,7 +2127,7 @@ class RecorderController extends ChangeNotifier {
         if (activeDevice != null) lastKnownDevice = activeDevice;
         unawaited(_persistDevice());
         statusMessage =
-            '设备信息 · 麦克风 ${info?.battery ?? "—"}% · 充电盒 ${info?.boxBattery ?? "—"}%';
+            '麦克风 ${info?.battery ?? "—"}% · 充电盒 ${info?.boxBattery ?? "—"}%';
         final hex = info?.rawHex ?? '';
         if (hex.isNotEmpty) {
           logs = [
@@ -1969,10 +2185,7 @@ class RecorderController extends ChangeNotifier {
     }
     if (p.cmdType == RxCmd.transportTypeAlt && p.cmdId == RxCmd.fileListId) {
       final list = OfflineFileList.parse(p.payload, withEndTime: true);
-      files = _sortFilesNewestFirst(list.files);
-      statusMessage = '${files.length} 条录音';
-      _kickRealtimeFromFileList(list);
-      _scheduleAutoTransferMissing();
+      _handleFileListPage(list);
     }
 
     // 1A06 — new file while recording (Feishu: always status=recording + fileId LE @payload[0]).
@@ -2057,6 +2270,7 @@ class RecorderController extends ChangeNotifier {
             if (activeDevice != null) lastKnownDevice = activeDevice;
             unawaited(_persistDevice());
             statusMessage = '绑定指令已接受，等待设备确认…';
+            _schedulePostBindFileRefresh();
           } else {
             statusMessage = '绑定失败';
             errorMessage = '设备拒绝绑定（flag=${p.successFlag}）';
@@ -2068,6 +2282,7 @@ class RecorderController extends ChangeNotifier {
           if (activeDevice != null) lastKnownDevice = activeDevice;
           unawaited(_persistDevice());
           statusMessage = '已绑定（设备已确认）';
+          _schedulePostBindFileRefresh();
         } else {
           statusMessage = '绑定确认失败';
           errorMessage = '设备确认绑定失败（flag=${p.successFlag}）';
@@ -2111,6 +2326,7 @@ class RecorderController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _postBindFileRefreshTimer?.cancel();
     _stopBatteryPoll();
     for (final s in _subs) {
       s.cancel();

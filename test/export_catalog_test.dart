@@ -18,6 +18,15 @@ void main() {
     ]);
   });
 
+  test('standard WAV is preferred over raw Opus for the same recording', () {
+    final result = ExportCatalog.newestPathsFirst([
+      '/exports/1730000000.opus',
+      '/exports/1730000000.wav',
+    ]);
+
+    expect(result, ['/exports/1730000000.wav']);
+  });
+
   test('unexported device recordings are newest first', () {
     final missing = ExportCatalog.unexportedNewestFirst(
       [

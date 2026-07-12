@@ -9,8 +9,8 @@ import '../../theme/app_theme.dart';
 import 'connect_onboarding.dart';
 import 'widgets.dart';
 
-/// Feishu-style connect sheet: guide user to seat mic + short-press case button,
-/// while BLE scan runs and auto-connects a discovered D3200.
+/// Feishu-style connect sheet: scan nearby D3200 devices and let the user pick
+/// one. Persisted bound devices may still reconnect through the controller.
 Future<void> showScanDevicesSheet(BuildContext context) {
   final c = context.read<RecorderController>();
   if (c.phase != AppPhase.scanning && c.phase != AppPhase.connecting) {
@@ -36,8 +36,7 @@ class ScanDevicesSheet extends StatefulWidget {
 }
 
 class _ScanDevicesSheetState extends State<ScanDevicesSheet> {
-  bool _autoConnectStarted = false;
-  String? _autoConnectId;
+  String? _connectingId;
 
   /// After GATT success, show Feishu success + tips carousel.
   bool _showOnboarding = false;
@@ -61,57 +60,12 @@ class _ScanDevicesSheetState extends State<ScanDevicesSheet> {
     setState(() => _showOnboarding = true);
   }
 
-  Future<void> _tryAutoConnect(RecorderController c) async {
-    if (_autoConnectStarted || c.connected || _showOnboarding) return;
-    if (c.phase == AppPhase.connecting) return;
-
-    ScannedDevice? target;
-    for (final d in c.devices) {
-      if (d.isD3200 || d.looksLikeSoundcore) {
-        target = d;
-        break;
-      }
-    }
-    if (target == null) return;
-
-    _autoConnectStarted = true;
-    _autoConnectId = target.id;
-    setState(() {});
-    try {
-      await c.connect(target);
-      if (!mounted) return;
-      if (c.connected) {
-        _enterOnboarding();
-      } else {
-        // Allow another try if connect failed.
-        _autoConnectStarted = false;
-        _autoConnectId = null;
-        if (mounted) setState(() {});
-      }
-    } catch (_) {
-      _autoConnectStarted = false;
-      _autoConnectId = null;
-      if (mounted) setState(() {});
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final c = context.watch<RecorderController>();
     final scanning = c.phase == AppPhase.scanning;
     final connecting = c.phase == AppPhase.connecting;
     final height = MediaQuery.sizeOf(context).height * 0.82;
-
-    // Feishu flow: after user short-presses case, device appears → auto connect.
-    if (!_showOnboarding &&
-        !_autoConnectStarted &&
-        !connecting &&
-        !c.connected &&
-        c.devices.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) unawaited(_tryAutoConnect(c));
-      });
-    }
 
     final showDeviceList = c.devices.isNotEmpty || connecting;
 
@@ -146,7 +100,7 @@ class _ScanDevicesSheetState extends State<ScanDevicesSheet> {
               ),
             ),
             const Text(
-              '连接设备',
+              '扫描设备',
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 20,
@@ -170,26 +124,23 @@ class _ScanDevicesSheetState extends State<ScanDevicesSheet> {
                 ? _FoundDevicesPanel(
                     devices: c.devices,
                     connecting: connecting,
-                    connectingId: _autoConnectId ?? c.activeDevice?.id,
+                    connectingId: _connectingId ?? c.activeDevice?.id,
                     busy: connecting || c.phase == AppPhase.busy,
                     scanning: scanning,
                     error: c.errorMessage,
                     onRescan: () {
-                      _autoConnectStarted = false;
-                      _autoConnectId = null;
+                      _connectingId = null;
                       unawaited(c.startScan());
                     },
                     onTapDevice: (d) async {
-                      _autoConnectStarted = true;
-                      _autoConnectId = d.id;
+                      _connectingId = d.id;
                       setState(() {});
                       await c.connect(d);
                       if (!mounted) return;
                       if (c.connected) {
                         _enterOnboarding();
                       } else {
-                        _autoConnectStarted = false;
-                        _autoConnectId = null;
+                        _connectingId = null;
                         setState(() {});
                       }
                     },
@@ -277,11 +228,11 @@ class _ConnectGuidePanelState extends State<_ConnectGuidePanel>
                   },
                 ),
                 Image.asset(
-                  'assets/product/white_03_device_connect.webp',
+                  'assets/product/guide_connect_case.webp',
                   height: 180,
                   fit: BoxFit.contain,
                   errorBuilder: (_, _, _) => Image.asset(
-                    'assets/product/d3200_device_connected_white.webp',
+                    'assets/product/d3200_chargebox_white.webp',
                     height: 180,
                     fit: BoxFit.contain,
                     errorBuilder: (_, _, _) => const Icon(
@@ -392,15 +343,6 @@ class _ConnectGuidePanelState extends State<_ConnectGuidePanel>
               ),
             ),
           ],
-          const SizedBox(height: 16),
-          Text(
-            '无需经典蓝牙配对 · 短按后设备会出现在下方列表',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontSize: 11,
-              color: AppColors.textMuted.withValues(alpha: 0.9),
-            ),
-          ),
         ],
       ),
     );

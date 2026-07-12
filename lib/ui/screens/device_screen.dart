@@ -48,19 +48,9 @@ class DeviceScreen extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            const SizedBox(width: 8),
-            StatusPill(
-              label: c.connected ? '在线' : '离线',
-              color: c.connected ? AppColors.mint : AppColors.coral,
-            ),
           ],
         ),
         actions: [
-          IconButton(
-            tooltip: '扫描设备',
-            onPressed: () => showScanDevicesSheet(context),
-            icon: const Icon(Icons.bluetooth_searching_rounded),
-          ),
           IconButton(
             tooltip: '刷新',
             onPressed: c.phase == AppPhase.busy ? null : c.refreshInfo,
@@ -213,7 +203,7 @@ class DeviceScreen extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Text(
-                    c.bound ? '当前状态：已绑定' : '当前状态：未绑定（本地控制通常仍可用）',
+                    c.bound ? '当前状态：已绑定' : '当前状态：未绑定',
                     style: const TextStyle(
                       color: AppColors.textSecondary,
                       fontSize: 12,
@@ -377,19 +367,9 @@ class _OfflineDeviceView extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = controller;
     final d = c.displayDevice;
-    final info = c.lastKnownInfo;
 
     return GradientScaffold(
-      appBar: AppBar(
-        title: Text(c.displayDeviceName),
-        actions: [
-          IconButton(
-            tooltip: '扫描设备',
-            onPressed: () => showScanDevicesSheet(context),
-            icon: const Icon(Icons.bluetooth_searching_rounded),
-          ),
-        ],
-      ),
+      appBar: AppBar(title: Text(c.displayDeviceName)),
       child: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 100),
@@ -413,17 +393,17 @@ class _OfflineDeviceView extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 10),
-                    Text(
-                      d.displayName,
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.headlineMedium,
-                    ),
-                    const SizedBox(height: 8),
                     Wrap(
                       alignment: WrapAlignment.center,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       spacing: 8,
                       runSpacing: 6,
                       children: [
+                        Text(
+                          d.displayName,
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.headlineMedium,
+                        ),
                         const StatusPill(label: '离线', color: AppColors.coral),
                         if (c.bound)
                           const StatusPill(
@@ -434,11 +414,6 @@ class _OfflineDeviceView extends StatelessWidget {
                           const StatusPill(
                             label: '广告已绑定',
                             color: AppColors.accent,
-                          ),
-                        if (d.isD3200)
-                          const StatusPill(
-                            label: 'D3200',
-                            color: AppColors.mint,
                           ),
                       ],
                     ),
@@ -473,43 +448,6 @@ class _OfflineDeviceView extends StatelessWidget {
                   ],
                 ),
               ),
-              if (info != null) ...[
-                const SizedBox(height: 18),
-                const SectionLabel('上次设备信息'),
-                SurfaceCard(
-                  child: Column(
-                    children: [
-                      InfoRow(
-                        label: '序列号',
-                        value: info.serialNumber.isNotEmpty
-                            ? info.serialNumber
-                            : '—',
-                      ),
-                      const Divider(),
-                      InfoRow(
-                        label: '固件版本',
-                        value: info.firmwareVersion.isNotEmpty
-                            ? info.firmwareVersion
-                            : '—',
-                      ),
-                      const Divider(),
-                      InfoRow(
-                        label: '麦克风电量',
-                        value: info.battery != null ? '${info.battery}%' : '—',
-                      ),
-                      const Divider(),
-                      InfoRow(
-                        label: '充电盒电量',
-                        value: info.boxBattery != null
-                            ? '${info.boxBattery}%'
-                            : '—',
-                      ),
-                      const Divider(),
-                      const InfoRow(label: '产品', value: 'D3200'),
-                    ],
-                  ),
-                ),
-              ],
             ] else ...[
               const SizedBox(height: 48),
               SurfaceCard(

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../ai/stt_types.dart';
 import '../../protocol/models.dart';
@@ -153,6 +154,7 @@ class _LocalExportsTabState extends State<_LocalExportsTab> {
   final Set<String> _selected = {};
   bool _selecting = false;
   bool _saving = false;
+  bool _deleting = false;
 
   void _toggleSelecting() {
     setState(() {
@@ -193,6 +195,48 @@ class _LocalExportsTabState extends State<_LocalExportsTab> {
     );
   }
 
+  Future<void> _deleteSelected(BuildContext context) async {
+    if (_selected.isEmpty || _saving || _deleting) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('删除所选录音？'),
+        content: Text('将永久删除所选的 ${_selected.length} 个本地录音，此操作无法撤销。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除', style: TextStyle(color: AppColors.coral)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+
+    setState(() => _deleting = true);
+    final result = await context.read<RecorderController>().deleteLocalExports(
+      _selected,
+    );
+    if (!context.mounted) return;
+    setState(() {
+      _deleting = false;
+      _selecting = false;
+      _selected.clear();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          result.failed.isEmpty
+              ? '已删除 ${result.deleted} 个录音'
+              : '已删除 ${result.deleted} 个录音，${result.failed.length} 个失败',
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (widget.paths.isEmpty) {
@@ -210,13 +254,13 @@ class _LocalExportsTabState extends State<_LocalExportsTab> {
           children: [
             if (_selecting) ...[
               TextButton(
-                onPressed: _saving
+                onPressed: _saving || _deleting
                     ? null
                     : () => setState(() => _selected.addAll(widget.paths)),
                 child: const Text('全选'),
               ),
               TextButton(
-                onPressed: _saving || _selected.isEmpty
+                onPressed: _saving || _deleting || _selected.isEmpty
                     ? null
                     : () => setState(_selected.clear),
                 child: const Text('清空'),
@@ -231,7 +275,7 @@ class _LocalExportsTabState extends State<_LocalExportsTab> {
               ),
               const SizedBox(width: 8),
               FilledButton.icon(
-                onPressed: _selected.isEmpty || _saving
+                onPressed: _selected.isEmpty || _saving || _deleting
                     ? null
                     : () => _saveSelected(context),
                 icon: _saving
@@ -243,18 +287,36 @@ class _LocalExportsTabState extends State<_LocalExportsTab> {
                     : const Icon(Icons.save_alt_rounded, size: 18),
                 label: Text(_saving ? '保存中…' : '保存所选'),
               ),
+              const SizedBox(width: 6),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.coral,
+                  foregroundColor: Colors.white,
+                ),
+                onPressed: _selected.isEmpty || _saving || _deleting
+                    ? null
+                    : () => _deleteSelected(context),
+                icon: _deleting
+                    ? const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.delete_outline_rounded, size: 18),
+                label: Text(_deleting ? '删除中…' : '删除所选'),
+              ),
             ] else ...[
               const Spacer(),
               TextButton.icon(
                 onPressed: _toggleSelecting,
                 icon: const Icon(Icons.drive_file_move_outline, size: 18),
-                label: const Text('批量另存'),
+                label: const Text('批量管理'),
               ),
             ],
             if (_selecting)
               IconButton(
                 tooltip: '取消选择',
-                onPressed: _saving ? null : _toggleSelecting,
+                onPressed: _saving || _deleting ? null : _toggleSelecting,
                 icon: const Icon(Icons.close_rounded),
               ),
           ],
@@ -290,6 +352,37 @@ class _DeviceFilesTab extends StatelessWidget {
 
   final bool busy;
 
+  Future<void> _deleteSelected(
+    BuildContext context,
+    RecorderController controller,
+  ) async {
+    if (controller.selectedFileIds.isEmpty) return;
+    final count = controller.selectedFileIds.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('删除设备端录音？'),
+        content: Text('将永久删除设备上的 $count 个录音，此操作无法撤销。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除', style: TextStyle(color: AppColors.coral)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final deleted = await controller.deleteSelectedDeviceFiles();
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('已删除 $deleted 个设备端录音')));
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.watch<RecorderController>();
@@ -297,37 +390,35 @@ class _DeviceFilesTab extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: AccentButton(
-                label: c.selectedFileIds.isEmpty ? '全部导出（Wi‑Fi）' : '导出所选',
-                icon: Icons.download_rounded,
-                color: AppColors.mint,
-                onPressed: c.connected && c.files.isNotEmpty && !busy
-                    ? () => startWifiExport(context, c)
-                    : null,
-              ),
-            ),
-            if (c.files.isNotEmpty) ...[
-              const SizedBox(width: 4),
-              IconButton(
-                tooltip: c.selecting ? '取消选择' : '选择',
-                onPressed: busy ? null : c.toggleSelecting,
-                icon: Icon(
-                  c.selecting ? Icons.close_rounded : Icons.checklist_rounded,
+        if (!c.selecting)
+          Row(
+            children: [
+              Expanded(
+                child: AccentButton(
+                  label: '全部导出（Wi‑Fi）',
+                  icon: Icons.download_rounded,
+                  color: AppColors.mint,
+                  onPressed: c.connected && c.files.isNotEmpty && !busy
+                      ? () => startWifiExport(context, c)
+                      : null,
                 ),
               ),
+              if (c.files.isNotEmpty) ...[
+                const SizedBox(width: 4),
+                TextButton.icon(
+                  onPressed: busy ? null : c.toggleSelecting,
+                  icon: const Icon(Icons.checklist_rounded, size: 18),
+                  label: const Text('批量管理'),
+                ),
+              ],
+              IconButton(
+                tooltip: '刷新',
+                onPressed: c.connected && !busy ? c.listFiles : null,
+                icon: const Icon(Icons.refresh_rounded),
+              ),
             ],
-            IconButton(
-              tooltip: '刷新',
-              onPressed: c.connected && !busy ? c.listFiles : null,
-              icon: const Icon(Icons.refresh_rounded),
-            ),
-          ],
-        ),
+          ),
         if (c.selecting && c.files.isNotEmpty) ...[
-          const SizedBox(height: 4),
           Row(
             children: [
               TextButton(
@@ -347,6 +438,39 @@ class _DeviceFilesTab extends StatelessWidget {
                   color: AppColors.textMuted,
                   fontSize: 12,
                 ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: busy || c.selectedFileIds.isEmpty
+                      ? null
+                      : () => startWifiExport(context, c),
+                  icon: const Icon(Icons.download_rounded, size: 18),
+                  label: const Text('导出所选'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.coral,
+                    foregroundColor: Colors.white,
+                  ),
+                  onPressed: busy || c.selectedFileIds.isEmpty
+                      ? null
+                      : () => _deleteSelected(context, c),
+                  icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                  label: const Text('删除所选'),
+                ),
+              ),
+              IconButton(
+                tooltip: '取消选择',
+                onPressed: busy ? null : c.toggleSelecting,
+                icon: const Icon(Icons.close_rounded),
               ),
             ],
           ),
@@ -416,6 +540,84 @@ class _LocalExportCard extends StatelessWidget {
   final bool selected;
   final VoidCallback? onSelected;
 
+  Future<void> _exportTranscript(
+    BuildContext context,
+    String name,
+    String text,
+  ) async {
+    final stem = name.replaceFirst(RegExp(r'\.(?:wav|opus(?:\.bin)?)$'), '');
+    try {
+      final destination = await getSaveLocation(
+        suggestedName: '$stem.txt',
+        confirmButtonText: '导出',
+        canCreateDirectories: true,
+      );
+      if (destination == null) return;
+      await File(destination.path).writeAsString(text, flush: true);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('转写文本已导出')));
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('导出失败：$error')));
+    }
+  }
+
+  Future<void> _shareTranscript(
+    BuildContext context,
+    String name,
+    String text,
+  ) async {
+    try {
+      final box = context.findRenderObject() as RenderBox?;
+      final origin = box == null
+          ? null
+          : box.localToGlobal(Offset.zero) & box.size;
+      await SharePlus.instance.share(
+        ShareParams(
+          text: text,
+          title: '分享转写文本',
+          subject: '$name 转写文本',
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('分享失败：$error')));
+    }
+  }
+
+  Future<void> _confirmRetranscribe(
+    BuildContext context,
+    RecorderController controller,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('重新转写？'),
+        content: const Text('当前转写文本将被新的转写结果替换。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('重新转写'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && context.mounted) {
+      await controller.transcribeLocalFile(path);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.watch<RecorderController>();
@@ -446,7 +648,7 @@ class _LocalExportCard extends StatelessWidget {
                 const SizedBox(width: 4),
               ],
               Icon(
-                name.endsWith('.opus')
+                name.endsWith('.opus') || name.endsWith('.wav')
                     ? Icons.audio_file_rounded
                     : Icons.insert_drive_file_rounded,
                 color: loaded ? AppColors.accent : AppColors.mint,
@@ -513,31 +715,30 @@ class _LocalExportCard extends StatelessWidget {
               const SizedBox(height: 10),
               Row(
                 children: [
-                  const Icon(
-                    Icons.subtitles_outlined,
-                    size: 16,
-                    color: AppColors.violet,
-                  ),
-                  const SizedBox(width: 6),
-                  const Text(
-                    '转写文本',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 12,
-                      color: AppColors.violet,
-                    ),
-                  ),
-                  const Spacer(),
                   if (c.sttConfigured)
-                    TextButton(
+                    TextButton.icon(
                       onPressed: c.transcribing
                           ? null
-                          : () => c.transcribeLocalFile(path),
-                      child: Text(
+                          : () => _confirmRetranscribe(context, c),
+                      icon: const Icon(Icons.refresh_rounded, size: 18),
+                      label: Text(
                         c.transcribing ? '转写中…' : '重新转写',
                         style: const TextStyle(fontSize: 12),
                       ),
                     ),
+                  const Spacer(),
+                  IconButton(
+                    tooltip: '导出转写文本',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _exportTranscript(context, name, text),
+                    icon: const Icon(Icons.file_download_outlined, size: 19),
+                  ),
+                  IconButton(
+                    tooltip: '分享转写文本',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _shareTranscript(context, name, text),
+                    icon: const Icon(Icons.ios_share_rounded, size: 19),
+                  ),
                 ],
               ),
               const SizedBox(height: 6),

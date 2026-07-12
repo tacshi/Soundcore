@@ -34,9 +34,6 @@ class BleService {
   /// True while [connect] is in progress (suppresses spurious disconnect UI).
   bool _connecting = false;
 
-  /// When true (default), only show D3200 / soundcore family advertisements.
-  bool filterSoundcoreOnly = true;
-
   /// Raw ads seen this scan (for diagnostics).
   int adsSeen = 0;
 
@@ -189,15 +186,21 @@ class BleService {
 
         final parsed = AdvertisementParser.tryParse(r);
         if (parsed != null) {
-          _found[parsed.id] = parsed;
+          // CoreBluetooth may surface the same physical peripheral under more
+          // than one transient identifier. The D3200 advertisement includes
+          // its stable MAC, so use that as the scan-list identity when present.
+          final mac = parsed.macAddress
+              ?.replaceAll(':', '')
+              .trim()
+              .toUpperCase();
+          final scanKey = mac != null && mac.isNotEmpty
+              ? 'mac:$mac'
+              : 'id:${parsed.id}';
+          _found[scanKey] = parsed;
           _log(
             'MATCH ${parsed.displayName} mac=${parsed.macAddress} '
             'uuid=${parsed.serviceUuid} rssi=${parsed.rssi}',
           );
-        } else if (!filterSoundcoreOnly) {
-          // Show everything (debug mode).
-          if (r.rssi < -95) continue;
-          _found[id] = AdvertisementParser.fromAny(r);
         }
       }
       final list = _found.values.toList()
@@ -216,7 +219,7 @@ class BleService {
     // when the OS filter is unreliable.
     _log(
       'Open BLE scan (software filter for ${AnkerUuids.d3200Service.str128}, '
-      'soundcoreOnly=$filterSoundcoreOnly)…',
+      'soundcore devices only)…',
     );
     await FlutterBluePlus.startScan(
       timeout: timeout,

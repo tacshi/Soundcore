@@ -69,15 +69,17 @@ class InlinePlayer extends StatelessWidget {
                   fontFeatures: [FontFeature.tabularFigures()],
                 ),
               ),
-              const Spacer(),
-              Text(
-                loaded ? _fmt(c.duration) : '点播放',
-                style: const TextStyle(
-                  fontSize: 11,
-                  color: AppColors.textMuted,
-                  fontFeatures: [FontFeature.tabularFigures()],
+              if (loaded) ...[
+                const Spacer(),
+                Text(
+                  _fmt(c.duration),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppColors.textMuted,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -85,7 +87,8 @@ class InlinePlayer extends StatelessWidget {
         Row(
           children: [
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
+              constraints: const BoxConstraints(minWidth: 82, minHeight: 42),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
               decoration: BoxDecoration(
                 color: AppColors.bgElevated,
                 borderRadius: BorderRadius.circular(8),
@@ -100,10 +103,11 @@ class InlinePlayer extends StatelessWidget {
                       ? c.playbackSpeed
                       : 1.0,
                   isDense: true,
+                  iconSize: 22,
                   dropdownColor: AppColors.bgCard,
                   style: const TextStyle(
                     color: AppColors.textPrimary,
-                    fontSize: 12,
+                    fontSize: 14,
                     fontWeight: FontWeight.w600,
                   ),
                   items: [
@@ -179,9 +183,9 @@ class _IconBtn extends StatelessWidget {
       message: tooltip,
       child: IconButton(
         onPressed: onPressed,
-        icon: Icon(icon, size: 22),
+        icon: Icon(icon, size: 30),
         color: onPressed == null ? AppColors.textMuted : AppColors.textPrimary,
-        visualDensity: VisualDensity.compact,
+        constraints: const BoxConstraints(minWidth: 52, minHeight: 52),
       ),
     );
   }

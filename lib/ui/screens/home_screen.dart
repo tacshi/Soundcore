@@ -36,19 +36,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final live = c.isLiveSession;
 
     return GradientScaffold(
-      appBar: AppBar(
-        title: Text(live ? '实时转写' : '录音'),
-        actions: [
-          IconButton(
-            tooltip: '扫描并连接',
-            onPressed: () => showScanDevicesSheet(context),
-            icon: Icon(
-              Icons.bluetooth_searching_rounded,
-              color: c.connected ? AppColors.mint : AppColors.accent,
-            ),
-          ),
-        ],
-      ),
+      appBar: AppBar(title: Text(live ? '实时转写' : '录音')),
       child: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -174,11 +162,16 @@ class _ConnectionHeader extends StatelessWidget {
               icon: c.recording ? Icons.fiber_manual_record : null,
             ),
           ] else
-            AccentButton(
-              label: '扫描',
-              icon: Icons.radar_rounded,
-              expand: false,
+            IconButton.filled(
+              tooltip: '扫描',
               onPressed: onScan,
+              style: IconButton.styleFrom(
+                backgroundColor: AppColors.accent,
+                foregroundColor: Colors.white,
+                minimumSize: const Size(44, 44),
+                padding: const EdgeInsets.all(11),
+              ),
+              icon: const Icon(Icons.radar_rounded, size: 22),
             ),
         ],
       ),

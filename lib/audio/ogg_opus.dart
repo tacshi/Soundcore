@@ -20,6 +20,17 @@ class OggOpus {
       bytes[2] == 0x67 &&
       bytes[3] == 0x53;
 
+  static bool isWav(List<int> bytes) =>
+      bytes.length >= 12 &&
+      bytes[0] == 0x52 &&
+      bytes[1] == 0x49 &&
+      bytes[2] == 0x46 &&
+      bytes[3] == 0x46 &&
+      bytes[8] == 0x57 &&
+      bytes[9] == 0x41 &&
+      bytes[10] == 0x56 &&
+      bytes[11] == 0x45;
+
   /// Returns path to a playable Ogg file (creates sidecar `*.ogg` if needed).
   static Future<String> ensurePlayable(String path) async {
     final file = File(path);
@@ -30,7 +41,7 @@ class OggOpus {
     if (raw.isEmpty) {
       throw StateError('文件为空');
     }
-    if (isOgg(raw)) return path;
+    if (isOgg(raw) || isWav(raw)) return path;
 
     final oggPath = path.endsWith('.opus')
         ? '${path.substring(0, path.length - 5)}.ogg'

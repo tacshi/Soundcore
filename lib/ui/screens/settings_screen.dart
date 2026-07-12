@@ -4,7 +4,6 @@ import 'package:provider/provider.dart';
 import '../../ai/stt_types.dart';
 import '../../state/recorder_controller.dart';
 import '../../theme/app_theme.dart';
-import '../widgets/scan_sheet.dart';
 import '../widgets/widgets.dart';
 
 /// App preferences: STT providers, streaming, BLE, diagnostics.
@@ -16,40 +15,20 @@ class SettingsScreen extends StatelessWidget {
     final c = context.watch<RecorderController>();
 
     return GradientScaffold(
-      appBar: AppBar(
-        title: const Text('设置'),
-        actions: [
-          IconButton(
-            tooltip: '扫描设备',
-            onPressed: () => showScanDevicesSheet(context),
-            icon: const Icon(Icons.bluetooth_searching_rounded),
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('设置')),
       child: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 100),
           children: [
-            const SectionLabel('录音与传输'),
+            const SectionLabel('传输'),
             SurfaceCard(
-              child: Column(
-                children: [
-                  _SettingsSwitch(
-                    title: '自动传输',
-                    subtitle: c.autoTransferActive
-                        ? '正在传输设备端未导出录音…'
-                        : '录音时优先传输当前录音；结束后自动补齐未导出录音',
-                    value: c.autoRealtime,
-                    onChanged: c.setAutoRealtime,
-                  ),
-                  const Divider(height: 20),
-                  _SettingsSwitch(
-                    title: '扫描全部 BLE',
-                    subtitle: '关闭则只显示 soundcore / Work 设备',
-                    value: c.showAllDevices,
-                    onChanged: c.setShowAllDevices,
-                  ),
-                ],
+              child: _SettingsSwitch(
+                title: '自动传输',
+                subtitle: c.autoTransferActive
+                    ? '正在传输设备端未导出录音…'
+                    : '录音时优先传输当前录音；结束后自动补齐未导出录音',
+                value: c.autoRealtime,
+                onChanged: c.setAutoRealtime,
               ),
             ),
             const SizedBox(height: 18),
@@ -97,29 +76,48 @@ class SettingsScreen extends StatelessWidget {
                     style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                   ),
                   const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
+                  Row(
                     children: [
-                      for (final e in const [
+                      for (final (index, e) in const [
                         ('zh', '中文'),
                         ('en', 'English'),
                         ('ja', '日本語'),
                         ('ko', '한국어'),
-                      ])
-                        ChoiceChip(
-                          label: Text(e.$2),
-                          selected: c.transcriptLanguage == e.$1,
-                          onSelected: (_) => c.setTranscriptLanguage(e.$1),
-                          selectedColor: AppColors.accentSoft,
-                          labelStyle: TextStyle(
-                            color: c.transcriptLanguage == e.$1
-                                ? AppColors.accent
-                                : AppColors.textSecondary,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 12,
+                      ].indexed) ...[
+                        if (index > 0) const SizedBox(width: 6),
+                        Expanded(
+                          child: SizedBox(
+                            width: double.infinity,
+                            child: ChoiceChip(
+                              label: FittedBox(
+                                fit: BoxFit.scaleDown,
+                                child: Text(e.$2),
+                              ),
+                              selected: c.transcriptLanguage == e.$1,
+                              onSelected: (_) => c.setTranscriptLanguage(e.$1),
+                              selectedColor: AppColors.accentSoft,
+                              showCheckmark: false,
+                              visualDensity: VisualDensity.compact,
+                              materialTapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 2,
+                                vertical: 6,
+                              ),
+                              labelPadding: const EdgeInsets.symmetric(
+                                horizontal: 3,
+                              ),
+                              labelStyle: TextStyle(
+                                color: c.transcriptLanguage == e.$1
+                                    ? AppColors.accent
+                                    : AppColors.textSecondary,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 12,
+                              ),
+                            ),
                           ),
                         ),
+                      ],
                     ],
                   ),
                 ],
@@ -386,6 +384,7 @@ class _ApiKeyFieldState extends State<_ApiKeyField> {
           const SizedBox(height: 8),
           TextField(
             controller: _controller,
+            onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
             obscureText: _obscure,
             autocorrect: false,
             enableSuggestions: false,

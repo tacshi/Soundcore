@@ -45,6 +45,39 @@ String normalizeSttText(String raw) {
   return t;
 }
 
+/// Render Soniox tokens as readable, speaker-attributed text.
+///
+/// Tokens without a speaker continue under the most recent speaker. Translation
+/// tokens are excluded because the app displays the source transcript.
+String renderSonioxTokens(Iterable<dynamic> tokens) {
+  final buffer = StringBuffer();
+  String? currentSpeaker;
+
+  for (final token in tokens) {
+    if (token is! Map) continue;
+    if (token['translation_status'] == 'translation') continue;
+
+    var text = '${token['text'] ?? ''}';
+    if (text.isEmpty) continue;
+    if (RegExp(r'^<end>$', caseSensitive: false).hasMatch(text.trim())) {
+      buffer.write('\n');
+      continue;
+    }
+
+    final rawSpeaker = token['speaker'];
+    final speaker = rawSpeaker == null ? null : '$rawSpeaker'.trim();
+    if (speaker != null && speaker.isNotEmpty && speaker != currentSpeaker) {
+      if (buffer.isNotEmpty) buffer.write('\n');
+      buffer.write('说话人 $speaker：');
+      currentSpeaker = speaker;
+      text = text.trimLeft();
+    }
+    buffer.write(text);
+  }
+
+  return normalizeSttText(buffer.toString());
+}
+
 /// Batch / file transcription result.
 class SttResult {
   const SttResult({

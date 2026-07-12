@@ -54,10 +54,9 @@ class AppSettings {
   const AppSettings({
     this.xaiApiKey,
     this.sonioxApiKey,
-    this.sttProvider = SttProvider.xai,
+    this.sttProvider = SttProvider.soniox,
     this.autoTranscribe = true,
     this.autoRealtime = true,
-    this.showAllDevices = false,
     this.transcriptLanguage = 'zh',
   });
 
@@ -66,7 +65,6 @@ class AppSettings {
   final SttProvider sttProvider;
   final bool autoTranscribe;
   final bool autoRealtime;
-  final bool showAllDevices;
   final String transcriptLanguage;
 
   AppSettings copyWith({
@@ -75,7 +73,6 @@ class AppSettings {
     SttProvider? sttProvider,
     bool? autoTranscribe,
     bool? autoRealtime,
-    bool? showAllDevices,
     String? transcriptLanguage,
     bool clearXai = false,
     bool clearSoniox = false,
@@ -86,7 +83,6 @@ class AppSettings {
       sttProvider: sttProvider ?? this.sttProvider,
       autoTranscribe: autoTranscribe ?? this.autoTranscribe,
       autoRealtime: autoRealtime ?? this.autoRealtime,
-      showAllDevices: showAllDevices ?? this.showAllDevices,
       transcriptLanguage: transcriptLanguage ?? this.transcriptLanguage,
     );
   }
@@ -98,15 +94,14 @@ class AppSettings {
     'sttProvider': sttProvider.name,
     'autoTranscribe': autoTranscribe,
     'autoRealtime': autoRealtime,
-    'showAllDevices': showAllDevices,
     'transcriptLanguage': transcriptLanguage,
   };
 
   factory AppSettings.fromJson(Map<String, dynamic> map) {
-    final providerName = '${map['sttProvider'] ?? 'xai'}';
+    final providerName = '${map['sttProvider'] ?? 'soniox'}';
     final provider = SttProvider.values.firstWhere(
       (e) => e.name == providerName,
-      orElse: () => SttProvider.xai,
+      orElse: () => SttProvider.soniox,
     );
     return AppSettings(
       xaiApiKey: _str(map['xaiApiKey']),
@@ -114,7 +109,6 @@ class AppSettings {
       sttProvider: provider,
       autoTranscribe: map['autoTranscribe'] != false,
       autoRealtime: map['autoRealtime'] != false,
-      showAllDevices: map['showAllDevices'] == true,
       transcriptLanguage: _str(map['transcriptLanguage']) ?? 'zh',
     );
   }

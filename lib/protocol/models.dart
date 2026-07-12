@@ -352,11 +352,13 @@ class OfflineFileEntry {
 class OfflineFileList {
   OfflineFileList({
     required this.files,
+    this.fileCount = 0,
     this.currentTransportTimestamp,
     this.currentTransportDuration,
   });
 
   final List<OfflineFileEntry> files;
+  final int fileCount;
   final int? currentTransportTimestamp;
   final int? currentTransportDuration;
 
@@ -397,6 +399,7 @@ class OfflineFileList {
 
     return OfflineFileList(
       files: files,
+      fileCount: count,
       currentTransportTimestamp: currTs,
       currentTransportDuration: currDur,
     );
