@@ -41,6 +41,10 @@ class _ScanDevicesSheetState extends State<ScanDevicesSheet> {
   /// After GATT success, show Feishu success + tips carousel.
   bool _showOnboarding = false;
 
+  // A previously bound device should just reconnect — only an unrecognized
+  // device needs the user to pick it and go through bind onboarding.
+  bool _autoConnectTried = false;
+
   @override
   void initState() {
     super.initState();
@@ -60,6 +64,43 @@ class _ScanDevicesSheetState extends State<ScanDevicesSheet> {
     setState(() => _showOnboarding = true);
   }
 
+  bool _isBoundMatch(RecorderController c, ScannedDevice d) {
+    if (d.isBoundAdvertised) return true;
+    if (!c.bound) return false;
+    final saved = c.lastKnownDevice;
+    if (saved == null) return false;
+    if (d.id == saved.id) return true;
+    return saved.macAddress != null && d.macAddress == saved.macAddress;
+  }
+
+  Future<void> _connectDevice(ScannedDevice d) async {
+    final c = context.read<RecorderController>();
+    _connectingId = d.id;
+    setState(() {});
+    await c.connect(d);
+    if (!mounted) return;
+    if (c.connected) {
+      _enterOnboarding();
+    } else {
+      _connectingId = null;
+      setState(() {});
+    }
+  }
+
+  void _maybeAutoConnectBound(RecorderController c) {
+    if (_autoConnectTried || _showOnboarding) return;
+    if (c.connected || c.phase == AppPhase.connecting) return;
+    for (final d in c.devices) {
+      if (_isBoundMatch(c, d)) {
+        _autoConnectTried = true;
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => unawaited(_connectDevice(d)),
+        );
+        return;
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.watch<RecorderController>();
@@ -68,6 +109,7 @@ class _ScanDevicesSheetState extends State<ScanDevicesSheet> {
     final height = MediaQuery.sizeOf(context).height * 0.82;
 
     final showDeviceList = c.devices.isNotEmpty || connecting;
+    _maybeAutoConnectBound(c);
 
     return SizedBox(
       height: height,
@@ -132,18 +174,7 @@ class _ScanDevicesSheetState extends State<ScanDevicesSheet> {
                       _connectingId = null;
                       unawaited(c.startScan());
                     },
-                    onTapDevice: (d) async {
-                      _connectingId = d.id;
-                      setState(() {});
-                      await c.connect(d);
-                      if (!mounted) return;
-                      if (c.connected) {
-                        _enterOnboarding();
-                      } else {
-                        _connectingId = null;
-                        setState(() {});
-                      }
-                    },
+                    onTapDevice: _connectDevice,
                   )
                 : _ConnectGuidePanel(
                     scanning: scanning,

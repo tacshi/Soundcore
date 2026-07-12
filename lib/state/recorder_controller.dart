@@ -93,12 +93,27 @@ class RecorderController extends ChangeNotifier {
           _crypto.resetSession();
           _encryptCompleter = null;
           _stopBatteryPoll();
+          _fileListPageTimeout?.cancel();
+          _loadingFileListPages = false;
           unawaited(_realtime.stop());
           realtimeState = const RealtimeStreamState();
           unawaited(_finishStreamStt());
           unawaited(stopPlayback());
+          // Unexpected drop (e.g. BLE paused while joining the device's
+          // Wi‑Fi SoftAP for export) on a bound device — reconnect without
+          // making the user open the scan sheet. Skip after an explicit
+          // disconnect()/unbind tap.
+          if (bound && !_explicitDisconnect) {
+            unawaited(startScan());
+          }
+          _explicitDisconnect = false;
         } else {
           // Connected (or reconnected) — keep battery fresh while linked.
+          // Also drop any stale "未连接"-type error a command fired mid-drop
+          // (e.g. a battery poll racing the Wi‑Fi SoftAP handoff) — it no
+          // longer reflects reality and would otherwise stick around
+          // forever next to a now-online status pill.
+          errorMessage = null;
           _startBatteryPoll();
         }
         notifyListeners();
@@ -890,6 +905,10 @@ class RecorderController extends ChangeNotifier {
   bool bound = false;
   ScannedDevice? activeDevice;
 
+  /// Set right before a user-initiated disconnect() so the connection-state
+  /// listener doesn't immediately try to auto-reconnect a bound device.
+  bool _explicitDisconnect = false;
+
   /// Survives disconnect so the Device tab can still show a known/bound unit.
   ScannedDevice? lastKnownDevice;
   DeviceInfoModel? lastKnownInfo;
@@ -1108,6 +1127,7 @@ class RecorderController extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
+    _explicitDisconnect = true;
     _postBindFileRefreshTimer?.cancel();
     _stopBatteryPoll();
     await _wifi.cancel();
@@ -1199,6 +1219,9 @@ class RecorderController extends ChangeNotifier {
     notifyListeners();
     try {
       await _ble.writeCommand(frame);
+      // A command just went through — any earlier error (e.g. a stale
+      // "未连接" from a command that raced a disconnect) is no longer true.
+      errorMessage = null;
     } catch (e) {
       errorMessage = e.toString();
     } finally {
@@ -1410,8 +1433,10 @@ class RecorderController extends ChangeNotifier {
   var _fileListPage = 0;
   var _loadingFileListPages = false;
   final List<OfflineFileEntry> _fileListPages = [];
+  Timer? _fileListPageTimeout;
 
   Future<void> listFiles() {
+    _fileListPageTimeout?.cancel();
     _fileListPage = 0;
     _fileListPages.clear();
     _loadingFileListPages = true;
@@ -1424,6 +1449,7 @@ class RecorderController extends ChangeNotifier {
   }
 
   void _handleFileListPage(OfflineFileList list) {
+    _fileListPageTimeout?.cancel();
     if (!_loadingFileListPages) {
       files = _sortFilesNewestFirst(list.files);
       statusMessage = '${files.length} 条录音';
@@ -1443,6 +1469,7 @@ class RecorderController extends ChangeNotifier {
 
     if (list.fileCount == 10) {
       _fileListPage++;
+      final requestedPage = _fileListPage;
       statusMessage = '正在获取录音列表…（${files.length} 条）';
       notifyListeners();
       unawaited(
@@ -1452,6 +1479,18 @@ class RecorderController extends ChangeNotifier {
             await _ble.writeCommand(
               DeviceCommands.listFilesWithEndTime(page: _fileListPage),
             );
+            // The device may silently never answer this page (BLE hiccup,
+            // busy firmware) — without a timeout _loadingFileListPages would
+            // stay stuck true and this partial list would never finalize.
+            _fileListPageTimeout = Timer(const Duration(seconds: 8), () {
+              if (!_loadingFileListPages || _fileListPage != requestedPage) {
+                return;
+              }
+              _loadingFileListPages = false;
+              statusMessage =
+                  '${files.length} 条录音（第 ${requestedPage + 1} 页无响应）';
+              notifyListeners();
+            });
           } catch (error) {
             _loadingFileListPages = false;
             errorMessage = '获取录音列表第 ${_fileListPage + 1} 页失败：$error';
@@ -2327,6 +2366,7 @@ class RecorderController extends ChangeNotifier {
   @override
   void dispose() {
     _postBindFileRefreshTimer?.cancel();
+    _fileListPageTimeout?.cancel();
     _stopBatteryPoll();
     for (final s in _subs) {
       s.cancel();
