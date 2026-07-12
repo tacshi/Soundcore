@@ -79,50 +79,6 @@ class DeviceScreen extends StatelessWidget {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 100),
           children: [
-            if (c.realtimeState.active ||
-                (c.realtimeState.bytesReceived > 0 &&
-                    c.realtimeState.message.isNotEmpty)) ...[
-              SurfaceCard(
-                borderColor: AppColors.mint.withValues(alpha: 0.4),
-                padding: const EdgeInsets.all(14),
-                child: Row(
-                  children: [
-                    Icon(
-                      c.realtimeState.active
-                          ? Icons.graphic_eq_rounded
-                          : Icons.check_circle_outline_rounded,
-                      color: AppColors.mint,
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            c.realtimeState.active ? '实时传输（BLE，自动）' : '实时文件已就绪',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w700,
-                              fontSize: 13,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            c.realtimeState.message.isNotEmpty
-                                ? c.realtimeState.message
-                                : '转写与文件请在「首页」查看',
-                            style: const TextStyle(
-                              color: AppColors.textMuted,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-            ],
             const SectionLabel('电量'),
             SurfaceCard(
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
