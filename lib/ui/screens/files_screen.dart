@@ -273,38 +273,6 @@ class _LocalExportsTabState extends State<_LocalExportsTab> {
                   fontSize: 12,
                 ),
               ),
-              const SizedBox(width: 8),
-              FilledButton.icon(
-                onPressed: _selected.isEmpty || _saving || _deleting
-                    ? null
-                    : () => _saveSelected(context),
-                icon: _saving
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.save_alt_rounded, size: 18),
-                label: Text(_saving ? '保存中…' : '保存所选'),
-              ),
-              const SizedBox(width: 6),
-              FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.coral,
-                  foregroundColor: Colors.white,
-                ),
-                onPressed: _selected.isEmpty || _saving || _deleting
-                    ? null
-                    : () => _deleteSelected(context),
-                icon: _deleting
-                    ? const SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.delete_outline_rounded, size: 18),
-                label: Text(_deleting ? '删除中…' : '删除所选'),
-              ),
             ] else ...[
               const Spacer(),
               TextButton.icon(
@@ -313,14 +281,55 @@ class _LocalExportsTabState extends State<_LocalExportsTab> {
                 label: const Text('批量管理'),
               ),
             ],
-            if (_selecting)
+          ],
+        ),
+        if (_selecting) ...[
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _selected.isEmpty || _saving || _deleting
+                      ? null
+                      : () => _saveSelected(context),
+                  icon: _saving
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.save_alt_rounded, size: 18),
+                  label: Text(_saving ? '保存中…' : '保存所选'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.coral,
+                    foregroundColor: Colors.white,
+                  ),
+                  onPressed: _selected.isEmpty || _saving || _deleting
+                      ? null
+                      : () => _deleteSelected(context),
+                  icon: _deleting
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.delete_outline_rounded, size: 18),
+                  label: Text(_deleting ? '删除中…' : '删除所选'),
+                ),
+              ),
               IconButton(
                 tooltip: '取消选择',
                 onPressed: _saving || _deleting ? null : _toggleSelecting,
                 icon: const Icon(Icons.close_rounded),
               ),
-          ],
-        ),
+            ],
+          ),
+        ],
         const SizedBox(height: 4),
         Expanded(
           child: ListView.builder(
@@ -1131,37 +1140,6 @@ class _WifiJoinSheetState extends State<_WifiJoinSheet> {
                       ),
                     ),
                   ],
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            SurfaceCard(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'macOS 加入步骤',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 13,
-                      color: AppColors.textPrimary,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '1. 打开「系统设置 → Wi‑Fi」\n'
-                    '2. 滚到底部点「其他…」(Other…)\n'
-                    '3. 网络名称粘贴：$ssid\n'
-                    '4. 安全性选「WPA2/WPA3 个人级」\n'
-                    '5. 密码粘贴：$password\n'
-                    '6. 勾选「显示网络」可选；连接成功后回到本应用',
-                    style: const TextStyle(
-                      color: AppColors.textSecondary,
-                      fontSize: 12,
-                      height: 1.45,
-                    ),
-                  ),
                 ],
               ),
             ),

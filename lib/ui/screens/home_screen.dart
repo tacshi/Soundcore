@@ -36,7 +36,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final live = c.isLiveSession;
 
     return GradientScaffold(
-      appBar: AppBar(title: Text(live ? '实时转写' : '录音')),
       child: SafeArea(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,

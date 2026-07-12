@@ -36,7 +36,6 @@ class _AppShellState extends State<AppShell> {
           bottom: 12,
           child: _NavBar(
             index: _index,
-            connected: c.connected,
             live: c.isLiveSession,
             onSelect: (i) {
               setState(() => _index = i);
@@ -63,13 +62,11 @@ class _NavBar extends StatelessWidget {
   const _NavBar({
     required this.index,
     required this.onSelect,
-    required this.connected,
     required this.live,
   });
 
   final int index;
   final ValueChanged<int> onSelect;
-  final bool connected;
   final bool live;
 
   @override
@@ -109,7 +106,6 @@ class _NavBar extends StatelessWidget {
               icon: Icons.devices_rounded,
               label: '设备',
               selected: index == 1,
-              badge: connected,
               onTap: () => onSelect(1),
             ),
             _NavItem(

@@ -147,11 +147,6 @@ class DeviceScreen extends StatelessWidget {
                   ),
                   const Divider(),
                   _DeviceInfoRow(label: '存储', value: info?.storageLabel ?? '—'),
-                  const Divider(),
-                  _DeviceInfoRow(
-                    label: '充电盒 MAC',
-                    value: info?.boxMac.isNotEmpty == true ? info!.boxMac : '—',
-                  ),
                 ],
               ),
             ),

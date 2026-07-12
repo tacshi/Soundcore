@@ -84,37 +84,26 @@ class SettingsScreen extends StatelessWidget {
                         ('ja', '日本語'),
                         ('ko', '한국어'),
                       ].indexed) ...[
-                        if (index > 0) const SizedBox(width: 6),
-                        Expanded(
-                          child: SizedBox(
-                            width: double.infinity,
-                            child: ChoiceChip(
-                              label: FittedBox(
-                                fit: BoxFit.scaleDown,
-                                child: Text(e.$2),
-                              ),
-                              selected: c.transcriptLanguage == e.$1,
-                              onSelected: (_) => c.setTranscriptLanguage(e.$1),
-                              selectedColor: AppColors.accentSoft,
-                              showCheckmark: false,
-                              visualDensity: VisualDensity.compact,
-                              materialTapTargetSize:
-                                  MaterialTapTargetSize.shrinkWrap,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 2,
-                                vertical: 6,
-                              ),
-                              labelPadding: const EdgeInsets.symmetric(
-                                horizontal: 3,
-                              ),
-                              labelStyle: TextStyle(
-                                color: c.transcriptLanguage == e.$1
-                                    ? AppColors.accent
-                                    : AppColors.textSecondary,
-                                fontWeight: FontWeight.w600,
-                                fontSize: 12,
-                              ),
-                            ),
+                        if (index > 0) const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: Text(e.$2),
+                          selected: c.transcriptLanguage == e.$1,
+                          onSelected: (_) => c.setTranscriptLanguage(e.$1),
+                          selectedColor: AppColors.accentSoft,
+                          showCheckmark: false,
+                          visualDensity: VisualDensity.compact,
+                          materialTapTargetSize:
+                              MaterialTapTargetSize.shrinkWrap,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          labelStyle: TextStyle(
+                            color: c.transcriptLanguage == e.$1
+                                ? AppColors.accent
+                                : AppColors.textSecondary,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 12,
                           ),
                         ),
                       ],
@@ -299,7 +288,6 @@ class _ApiKeyField extends StatefulWidget {
 
 class _ApiKeyFieldState extends State<_ApiKeyField> {
   late final TextEditingController _controller;
-  bool _obscure = true;
   bool _dirty = false;
 
   @override
@@ -385,7 +373,7 @@ class _ApiKeyFieldState extends State<_ApiKeyField> {
           TextField(
             controller: _controller,
             onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
-            obscureText: _obscure,
+            obscureText: true,
             autocorrect: false,
             enableSuggestions: false,
             style: const TextStyle(
@@ -424,17 +412,6 @@ class _ApiKeyFieldState extends State<_ApiKeyField> {
               suffixIcon: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  IconButton(
-                    tooltip: _obscure ? '显示' : '隐藏',
-                    onPressed: () => setState(() => _obscure = !_obscure),
-                    icon: Icon(
-                      _obscure
-                          ? Icons.visibility_outlined
-                          : Icons.visibility_off_outlined,
-                      size: 18,
-                      color: AppColors.textMuted,
-                    ),
-                  ),
                   if (_controller.text.isNotEmpty)
                     IconButton(
                       tooltip: '清除',

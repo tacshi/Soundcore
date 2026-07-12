@@ -110,7 +110,7 @@ void main() {
       freeMemoryKb: 60 * 1024 * 1024,
     );
 
-    expect(info.storageLabel, '4 GB 已用 / 64 GB 共计');
+    expect(info.storageLabel, '4 GB / 64 GB');
   });
 
   test('bind and unbind match Feishu 0x0B/0x87 payloads', () {

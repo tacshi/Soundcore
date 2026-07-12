@@ -56,7 +56,7 @@ class DeviceInfoModel {
     final total = totalMemoryKb!.clamp(0, 0xFFFFFFFF);
     final free = freeMemoryKb!.clamp(0, total);
     final used = total - free;
-    return '${_formatStorageKb(used)} 已用 / ${_formatStorageKb(total)} 共计';
+    return '${_formatStorageKb(used)} / ${_formatStorageKb(total)}';
   }
 
   DeviceInfoModel copyWith({
