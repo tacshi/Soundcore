@@ -76,6 +76,7 @@ class RealtimeBleStream {
   bool _decryptOn = false;
   bool _starting = false;
   Timer? _idleFinalizeTimer;
+  Future<String?>? _finalizeInFlight;
 
   void _log(String m) => debugPrint('[Realtime] $m');
 
@@ -246,16 +247,38 @@ class RealtimeBleStream {
   Future<String?> _finalize({
     required bool keepActive,
     required String reason,
+  }) {
+    final inFlight = _finalizeInFlight;
+    if (inFlight != null) return inFlight;
+
+    final future = _finalizeOnce(keepActive: keepActive, reason: reason);
+    _finalizeInFlight = future;
+    return future.whenComplete(() {
+      if (identical(_finalizeInFlight, future)) {
+        _finalizeInFlight = null;
+      }
+    });
+  }
+
+  Future<String?> _finalizeOnce({
+    required bool keepActive,
+    required String reason,
   }) async {
     _idleFinalizeTimer?.cancel();
     final path = _path;
     final id = _fileId;
     final bytes = _received;
-    try {
-      await _sink?.flush();
-      await _sink?.close();
-    } catch (_) {}
+    final sink = _sink;
+    // Detach synchronously so late BLE slices cannot write to a sink while it
+    // is being flushed/closed. The stop timer and file-done packet can race.
     _sink = null;
+    _fileId = null;
+    _path = null;
+    _received = 0;
+    try {
+      await sink?.flush();
+      await sink?.close();
+    } catch (_) {}
     if (id != null) crypto.clearFile('$id');
 
     _log('finalize reason=$reason path=$path bytes=$bytes');
@@ -272,9 +295,6 @@ class RealtimeBleStream {
       return path;
     }
     _emit(const RealtimeStreamState(active: false, message: ''));
-    _fileId = null;
-    _path = null;
-    _received = 0;
     return null;
   }
 
