@@ -1312,7 +1312,10 @@ class RecorderController extends ChangeNotifier {
       _preferStreamStt = true;
       pcmFramesDecoded = 0;
       statusMessage = fileId != null && fileId > 0 ? '录音中 · 文件 $fileId' : '录音中';
-      if (autoRealtime && !isWifiExportSession) {
+      // The current recording always streams live over BLE — transcription
+      // depends on it. `autoRealtime` ("自动传输") only gates catching up on
+      // already-finished, un-exported recordings (see _autoTransferMissingFiles).
+      if (!isWifiExportSession) {
         if (fileId != null && fileId > 0) {
           unawaited(_startCurrentRecordingTransfer(fileId));
         } else {
@@ -1350,8 +1353,10 @@ class RecorderController extends ChangeNotifier {
   }
 
   /// Resolve current recording file id and start BLE realtime stream.
+  /// Not gated by `autoRealtime` — the current recording always streams live
+  /// so transcription keeps working regardless of the backlog-transfer setting.
   Future<void> _maybeStartAutoRealtime({required String reason}) async {
-    if (!autoRealtime || !connected || !_ble.isConnected) return;
+    if (!connected || !_ble.isConnected) return;
     if (isWifiExportSession) return;
     final recordingNow = recording || info?.recording == true;
     if (recordingNow) await _yieldBacklogToCurrentRecording();
@@ -1377,7 +1382,7 @@ class RecorderController extends ChangeNotifier {
   }
 
   void _kickRealtimeFromFileList(OfflineFileList list) {
-    if (!autoRealtime || !connected) return;
+    if (!connected) return;
     if (isWifiExportSession) return;
     if (!recording && info?.recording != true) return;
 
@@ -1416,7 +1421,7 @@ class RecorderController extends ChangeNotifier {
 
   Future<void> _startCurrentRecordingTransfer(int fileId) async {
     await _yieldBacklogToCurrentRecording();
-    if (!autoRealtime || !connected || !_ble.isConnected) return;
+    if (!connected || !_ble.isConnected) return;
     if (!recording && info?.recording != true) return;
     await _realtime.startForFile(fileId);
   }
@@ -1604,6 +1609,57 @@ class RecorderController extends ChangeNotifier {
           : '自动传输未完成';
     } finally {
       _autoTransferRunning = false;
+      phase = connected ? AppPhase.ready : AppPhase.idle;
+      notifyListeners();
+    }
+  }
+
+  /// On-demand single-file download over BLE — no Wi‑Fi SoftAP setup needed.
+  /// Wi‑Fi export is only worth the join dance for multiple files at once.
+  Future<void> downloadFileOverBle(OfflineFileEntry file) async {
+    if (!connected || !_ble.isConnected) {
+      errorMessage = '请先通过 BLE 连接';
+      notifyListeners();
+      return;
+    }
+    if (isWifiExportSession || isExporting) return;
+    if (phase == AppPhase.connecting || phase == AppPhase.busy) return;
+
+    await _yieldBacklogToCurrentRecording();
+    if (!encryptReady) await establishEncryptSession();
+    if (!connected || !_ble.isConnected) return;
+
+    phase = AppPhase.busy;
+    errorMessage = null;
+    statusMessage = '正在下载 ${file.title}…';
+    notifyListeners();
+    var lastProgressAt = DateTime.fromMillisecondsSinceEpoch(0);
+    try {
+      final rawPath = await _blePull.pullFile(
+        file,
+        onProgress: (received, expected) {
+          final now = DateTime.now();
+          if (now.difference(lastProgressAt) <
+              const Duration(milliseconds: 250)) {
+            return;
+          }
+          lastProgressAt = now;
+          final progress = expected > 0
+              ? ' ${(received * 100 / expected).clamp(0, 100).floor()}%'
+              : '';
+          statusMessage = '正在下载$progress · ${file.title}';
+          notifyListeners();
+        },
+      );
+      final path = await _convertExportToWav(rawPath, register: false);
+      _registerExportedPaths([path]);
+      statusMessage = '已下载 ${file.title}';
+    } on BleFilePullCancelled {
+      statusMessage = '已取消下载';
+    } catch (e) {
+      errorMessage = '下载失败：$e';
+      statusMessage = '下载失败';
+    } finally {
       phase = connected ? AppPhase.ready : AppPhase.idle;
       notifyListeners();
     }
@@ -2293,7 +2349,6 @@ class RecorderController extends ChangeNotifier {
       if (deviceRecording != recording) {
         _applyRecordStatus(deviceRecording ? 1 : 0, source: 'device_info');
       } else if (deviceRecording &&
-          autoRealtime &&
           !realtimeState.active &&
           !isWifiExportSession) {
         unawaited(_maybeStartAutoRealtime(reason: 'device_info_recording'));

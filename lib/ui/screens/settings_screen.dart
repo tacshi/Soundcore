@@ -26,7 +26,7 @@ class SettingsScreen extends StatelessWidget {
                 title: '自动传输',
                 subtitle: c.autoTransferActive
                     ? '正在传输设备端未导出录音…'
-                    : '录音时优先传输当前录音；结束后自动补齐未导出录音',
+                    : '自动补齐已结束但未导出的历史录音（当前录音始终实时传输，以支持转写）',
                 value: c.autoRealtime,
                 onChanged: c.setAutoRealtime,
               ),

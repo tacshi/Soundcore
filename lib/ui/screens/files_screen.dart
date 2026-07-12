@@ -522,12 +522,7 @@ class _DeviceFilesTab extends StatelessWidget {
                       onTap: c.selecting
                           ? () => c.toggleFileSelected(f.fileId)
                           : null,
-                      onExport: busy
-                          ? null
-                          : () {
-                              c.selectOnly(f.fileId);
-                              startWifiExport(context, c);
-                            },
+                      onExport: busy ? null : () => c.downloadFileOverBle(f),
                       onDelete: busy ? null : () => c.deleteFile(f.fileId),
                     );
                   },
@@ -1487,7 +1482,7 @@ class _DeviceFileTile extends StatelessWidget {
           ),
           if (!selecting) ...[
             IconButton(
-              tooltip: '通过 Wi‑Fi 导出',
+              tooltip: '通过蓝牙下载',
               onPressed: onExport,
               icon: const Icon(Icons.download_rounded, color: AppColors.mint),
             ),
