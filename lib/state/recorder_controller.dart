@@ -963,6 +963,8 @@ class RecorderController extends ChangeNotifier {
 
   /// Local exported paths (standard WAV when decryption succeeds).
   List<String> exportedPaths = [];
+  final Map<String, Future<String>> _wavConversions = {};
+  bool _catalogConversionRunning = false;
   final Map<String, Duration> _localDurations = {};
   final Set<String> _durationLoads = {};
 
@@ -1767,9 +1769,33 @@ class RecorderController extends ChangeNotifier {
         }
       }
       _registerExportedPaths([...exportedPaths, ...paths]);
+      final wavIds = paths
+          .where((path) => path.endsWith('.wav'))
+          .map(ExportCatalog.fileIdFromPath)
+          .whereType<int>()
+          .toSet();
+      unawaited(_convertRawOnlyExports(paths, wavIds));
       if (notify) notifyListeners();
     } catch (error) {
       debugPrint('[Exports] load local catalog failed: $error');
+    }
+  }
+
+  Future<void> _convertRawOnlyExports(
+    Iterable<String> paths,
+    Set<int> wavIds,
+  ) async {
+    if (_catalogConversionRunning) return;
+    _catalogConversionRunning = true;
+    try {
+      for (final path in paths.where((path) => path.endsWith('.opus'))) {
+        final id = ExportCatalog.fileIdFromPath(path);
+        if (id == null || !wavIds.contains(id)) {
+          await _convertExportToWav(path);
+        }
+      }
+    } finally {
+      _catalogConversionRunning = false;
     }
   }
 
@@ -1980,17 +2006,36 @@ class RecorderController extends ChangeNotifier {
     List<String>? conversionFailures,
   }) async {
     if (!path.endsWith('.opus')) return path;
+    final existing = _wavConversions[path];
+    final ownsConversion = existing == null;
+    final conversion = existing ?? OpusWave.convertRawFile(path);
+    if (ownsConversion) {
+      _wavConversions[path] = conversion;
+    }
     try {
-      final wavPath = await OpusWave.convertRawFile(path);
+      final wavPath = await conversion;
       if (register) {
         _registerExportedPaths([wavPath]);
+        if (errorMessage?.startsWith('WAV 转码失败') == true) {
+          errorMessage = null;
+        }
         notifyListeners();
       }
       return wavPath;
     } catch (error) {
       debugPrint('[Exports] WAV conversion failed for $path: $error');
-      conversionFailures?.add('${p.basename(path)}: $error');
+      final failure = '${p.basename(path)}: $error';
+      if (conversionFailures != null) {
+        conversionFailures.add(failure);
+      } else {
+        errorMessage = 'WAV 转码失败，已保留原始 Opus 帧：$failure';
+        notifyListeners();
+      }
       return path;
+    } finally {
+      if (ownsConversion && identical(_wavConversions[path], conversion)) {
+        _wavConversions.remove(path);
+      }
     }
   }
 
