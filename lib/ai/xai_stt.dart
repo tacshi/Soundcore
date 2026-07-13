@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../audio/ogg_opus.dart';
+import 'progress_multipart.dart';
 import 'stt_types.dart';
 
 export 'stt_types.dart' show SttResult, SttProvider;
@@ -41,12 +42,14 @@ class XaiSttService {
     String path, {
     String? language,
     bool format = true,
+    SttFileProgressCallback? onProgress,
   }) async {
     final key = _apiKey;
     if (key == null) {
       throw StateError('未配置 XAI_API_KEY。请 export XAI_API_KEY=… 或在应用内设置。');
     }
 
+    onProgress?.call(const SttFileProgress(SttFileStage.preparing));
     final playable = await OggOpus.ensurePlayable(path);
     final file = File(playable);
     if (!await file.exists() || await file.length() < 64) {
@@ -69,10 +72,22 @@ class XaiSttService {
     // Bias toward product terms via single combined keyterm.
     req.fields['keyterm'] = 'soundcore Work';
     req.files.add(
-      http.MultipartFile.fromBytes(
-        'file',
-        bytes,
+      multipartFileWithProgress(
+        field: 'file',
+        bytes: bytes,
         filename: name.endsWith('.ogg') ? name : '$name.ogg',
+        onProgress: (sent, total) {
+          onProgress?.call(
+            SttFileProgress(
+              SttFileStage.uploading,
+              uploadedBytes: sent,
+              totalBytes: total,
+            ),
+          );
+          if (sent == total) {
+            onProgress?.call(const SttFileProgress(SttFileStage.processing));
+          }
+        },
       ),
     );
 
@@ -82,6 +97,7 @@ class XaiSttService {
     final streamed = await _client
         .send(req)
         .timeout(const Duration(seconds: 120));
+    onProgress?.call(const SttFileProgress(SttFileStage.fetching));
     final body = await streamed.stream.bytesToString();
     if (streamed.statusCode < 200 || streamed.statusCode >= 300) {
       throw StateError('STT HTTP ${streamed.statusCode}: $body');

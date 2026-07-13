@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../audio/ogg_opus.dart';
+import 'progress_multipart.dart';
 import 'stt_types.dart';
 
 /// Soniox async (file) STT — upload → create job → poll → transcript.
@@ -37,12 +38,17 @@ class SonioxSttService {
   };
 
   /// Transcribe a local raw Opus / Ogg path.
-  Future<SttResult> transcribePath(String path, {String? language}) async {
+  Future<SttResult> transcribePath(
+    String path, {
+    String? language,
+    SttFileProgressCallback? onProgress,
+  }) async {
     final key = apiKey;
     if (key == null) {
       throw StateError('未配置 SONIOX_API_KEY。请 export SONIOX_API_KEY=… 或在应用内设置。');
     }
 
+    onProgress?.call(const SttFileProgress(SttFileStage.preparing));
     final playable = await OggOpus.ensurePlayable(path);
     final file = File(playable);
     if (!await file.exists() || await file.length() < 64) {
@@ -56,12 +62,14 @@ class SonioxSttService {
     String? fileId;
     String? transcriptionId;
     try {
-      fileId = await _uploadFile(bytes, filename);
+      fileId = await _uploadFile(bytes, filename, onProgress: onProgress);
+      onProgress?.call(const SttFileProgress(SttFileStage.queued));
       transcriptionId = await _createTranscription(
         fileId: fileId,
         language: language,
       );
-      await _waitCompleted(transcriptionId);
+      await _waitCompleted(transcriptionId, onProgress: onProgress);
+      onProgress?.call(const SttFileProgress(SttFileStage.fetching));
       final text = normalizeSttText(await _fetchTranscript(transcriptionId));
       return SttResult(
         text: text,
@@ -80,11 +88,26 @@ class SonioxSttService {
     }
   }
 
-  Future<String> _uploadFile(List<int> bytes, String filename) async {
+  Future<String> _uploadFile(
+    Uint8List bytes,
+    String filename, {
+    SttFileProgressCallback? onProgress,
+  }) async {
     final req = http.MultipartRequest('POST', Uri.parse('$_base/files'));
     req.headers.addAll(_authHeaders);
     req.files.add(
-      http.MultipartFile.fromBytes('file', bytes, filename: filename),
+      multipartFileWithProgress(
+        field: 'file',
+        bytes: bytes,
+        filename: filename,
+        onProgress: (sent, total) => onProgress?.call(
+          SttFileProgress(
+            SttFileStage.uploading,
+            uploadedBytes: sent,
+            totalBytes: total,
+          ),
+        ),
+      ),
     );
     debugPrint('[Soniox] upload $filename ${bytes.length}B');
     final streamed = await _client
@@ -144,6 +167,7 @@ class SonioxSttService {
   Future<void> _waitCompleted(
     String transcriptionId, {
     Duration timeout = const Duration(minutes: 3),
+    SttFileProgressCallback? onProgress,
   }) async {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
@@ -164,6 +188,11 @@ class SonioxSttService {
           'Soniox transcription error: ${json['error_message'] ?? res.body}',
         );
       }
+      onProgress?.call(
+        SttFileProgress(
+          status == 'queued' ? SttFileStage.queued : SttFileStage.processing,
+        ),
+      );
       await Future<void>.delayed(const Duration(milliseconds: 800));
     }
     throw TimeoutException('Soniox transcription timeout');

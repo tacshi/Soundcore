@@ -13,6 +13,7 @@ import '../ai/soniox_stt_stream.dart';
 import '../ai/stt_types.dart';
 import '../ai/xai_stt.dart';
 import '../ai/xai_stt_stream.dart';
+import '../audio/audio_duration.dart';
 import '../audio/ogg_opus.dart';
 import '../audio/opus_pcm_decoder.dart';
 import '../audio/opus_wave.dart';
@@ -673,10 +674,37 @@ class RecorderController extends ChangeNotifier {
       return;
     }
     transcribing = true;
+    transcribingPath = path;
+    fileTranscriptionProgress = const SttFileProgress(SttFileStage.preparing);
     transcriptError = null;
     notifyListeners();
+    var lastProgressNotify = DateTime.fromMillisecondsSinceEpoch(0);
+    double? lastUploadFraction;
+    SttFileStage? lastStage;
     try {
-      final r = await _transcribePath(path);
+      final r = await _transcribePath(
+        path,
+        onProgress: (progress) {
+          if (transcribingPath != path) return;
+          fileTranscriptionProgress = progress;
+          final now = DateTime.now();
+          final fraction = progress.fraction;
+          final stageChanged = progress.stage != lastStage;
+          final fractionChanged =
+              fraction != null &&
+              (lastUploadFraction == null ||
+                  (fraction - lastUploadFraction!).abs() >= 0.01);
+          if (stageChanged ||
+              fractionChanged ||
+              now.difference(lastProgressNotify) >=
+                  const Duration(milliseconds: 120)) {
+            lastStage = progress.stage;
+            lastUploadFraction = fraction;
+            lastProgressNotify = now;
+            notifyListeners();
+          }
+        },
+      );
       transcript = r.text;
       transcriptPartial = null;
       if (r.text.trim().isNotEmpty) {
@@ -688,18 +716,28 @@ class RecorderController extends ChangeNotifier {
       transcriptError = '$e';
     } finally {
       transcribing = false;
+      transcribingPath = null;
+      fileTranscriptionProgress = null;
       notifyListeners();
     }
   }
 
-  Future<SttResult> _transcribePath(String path) {
+  Future<SttResult> _transcribePath(
+    String path, {
+    SttFileProgressCallback? onProgress,
+  }) {
     switch (sttProvider) {
       case SttProvider.xai:
-        return _xaiStt.transcribePath(path, language: _sttLanguageParam);
+        return _xaiStt.transcribePath(
+          path,
+          language: _sttLanguageParam,
+          onProgress: onProgress,
+        );
       case SttProvider.soniox:
         return _sonioxStt.transcribePath(
           path,
           language: transcriptLanguage.toLowerCase(),
+          onProgress: onProgress,
         );
     }
   }
@@ -873,6 +911,8 @@ class RecorderController extends ChangeNotifier {
   String transcript = '';
   String? transcriptPartial;
   bool transcribing = false;
+  String? transcribingPath;
+  SttFileProgress? fileTranscriptionProgress;
   String? transcriptError;
 
   /// Live streaming STT session active after Opus→PCM decode.
@@ -923,6 +963,8 @@ class RecorderController extends ChangeNotifier {
 
   /// Local exported paths (standard WAV when decryption succeeds).
   List<String> exportedPaths = [];
+  final Map<String, Duration> _localDurations = {};
+  final Set<String> _durationLoads = {};
 
   /// fileId → local path after Wi‑Fi export.
   final Map<int, String> localPathsByFileId = {};
@@ -1720,7 +1762,7 @@ class RecorderController extends ChangeNotifier {
       await for (final entity in dir.list(followLinks: false)) {
         if (entity is! File) continue;
         final name = p.basename(entity.path);
-        if (RegExp(r'^\d+\.(?:wav|opus(?:\.bin)?)$').hasMatch(name)) {
+        if (ExportCatalog.isSupportedExportPath(name)) {
           paths.add(entity.path);
         }
       }
@@ -1837,6 +1879,7 @@ class RecorderController extends ChangeNotifier {
           final file = File(candidate);
           if (await file.exists()) await file.delete();
           transcriptsByPath.remove(candidate);
+          _localDurations.remove(candidate);
         }
         if (id != null) transcriptsByFileId.remove(id);
         deleted++;
@@ -1864,6 +1907,41 @@ class RecorderController extends ChangeNotifier {
     return (deleted: deleted, failed: failed);
   }
 
+  Future<String> renameLocalExport(String path, String label) async {
+    final source = File(path);
+    if (!await source.exists()) throw StateError('文件不存在');
+
+    final targetName = ExportCatalog.renamedFileName(path, label);
+    final targetPath = p.join(p.dirname(path), targetName);
+    if (targetPath == path) return path;
+    final target = File(targetPath);
+    if (await target.exists()) throw StateError('同名文件已存在');
+
+    final id = ExportCatalog.fileIdFromPath(path);
+    if (playingPath == path || (id != null && playingFileId == id)) {
+      await stopPlayback();
+    }
+
+    await source.rename(targetPath);
+
+    final transcript = transcriptsByPath.remove(path);
+    if (transcript != null) transcriptsByPath[targetPath] = transcript;
+    final cachedDuration = _localDurations.remove(path);
+    if (cachedDuration != null) _localDurations[targetPath] = cachedDuration;
+    final renamedPaths = exportedPaths
+        .map((item) => item == path ? targetPath : item)
+        .toList();
+    exportedPaths = [];
+    _registerExportedPaths(renamedPaths);
+    if (expandedLocalPath == path) expandedLocalPath = targetPath;
+    await _persistTranscripts();
+
+    statusMessage = '已重命名为 $targetName';
+    errorMessage = null;
+    notifyListeners();
+    return targetPath;
+  }
+
   void _registerExportedPaths(Iterable<String> paths) {
     exportedPaths = ExportCatalog.newestPathsFirst([
       ...exportedPaths,
@@ -1873,6 +1951,26 @@ class RecorderController extends ChangeNotifier {
     for (final path in exportedPaths) {
       final id = ExportCatalog.fileIdFromPath(path);
       if (id != null) localPathsByFileId[id] = path;
+    }
+    _localDurations.removeWhere((path, _) => !exportedPaths.contains(path));
+  }
+
+  Duration? localDurationForPath(String path) {
+    final cached = _localDurations[path];
+    if (cached != null) return cached;
+    if (_durationLoads.add(path)) unawaited(_loadLocalDuration(path));
+    return null;
+  }
+
+  Future<void> _loadLocalDuration(String path) async {
+    try {
+      final value = await AudioDuration.read(path);
+      if (value != null && exportedPaths.contains(path)) {
+        _localDurations[path] = value;
+        notifyListeners();
+      }
+    } finally {
+      _durationLoads.remove(path);
     }
   }
 

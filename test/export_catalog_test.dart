@@ -27,6 +27,28 @@ void main() {
     expect(result, ['/exports/1730000000.wav']);
   });
 
+  test('renamed exports retain their device file id and extension', () {
+    final renamed = ExportCatalog.renamedFileName(
+      '/exports/1730000000.opus.bin',
+      'Customer interview',
+    );
+
+    expect(renamed, '1730000000_Customer interview.opus.bin');
+    expect(ExportCatalog.isSupportedExportPath('/exports/$renamed'), isTrue);
+    expect(ExportCatalog.fileIdFromPath(renamed), 1730000000);
+    expect(
+      ExportCatalog.editableLabelFromPath('/exports/$renamed'),
+      'Customer interview',
+    );
+  });
+
+  test('renamed exports reject unsafe filenames', () {
+    expect(
+      () => ExportCatalog.renamedFileName('/exports/173.wav', '../meeting'),
+      throwsArgumentError,
+    );
+  });
+
   test('unexported device recordings are newest first', () {
     final missing = ExportCatalog.unexportedNewestFirst(
       [

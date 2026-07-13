@@ -25,6 +25,25 @@ enum SttProvider {
   }
 }
 
+enum SttFileStage { preparing, uploading, queued, processing, fetching }
+
+class SttFileProgress {
+  const SttFileProgress(this.stage, {this.uploadedBytes, this.totalBytes});
+
+  final SttFileStage stage;
+  final int? uploadedBytes;
+  final int? totalBytes;
+
+  double? get fraction {
+    final uploaded = uploadedBytes;
+    final total = totalBytes;
+    if (uploaded == null || total == null || total <= 0) return null;
+    return (uploaded / total).clamp(0.0, 1.0);
+  }
+}
+
+typedef SttFileProgressCallback = void Function(SttFileProgress progress);
+
 /// Normalize provider-specific markers in transcript text.
 ///
 /// Soniox endpoint detection emits `<end>` tokens; convert those to newlines

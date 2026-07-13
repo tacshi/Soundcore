@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../ai/stt_types.dart';
 import '../../protocol/models.dart';
+import '../../state/export_catalog.dart';
 import '../../state/recorder_controller.dart';
 import '../../theme/app_theme.dart';
 import '../../wifi/wifi_export_service.dart';
@@ -30,6 +31,19 @@ class FilesBody extends StatefulWidget {
 
   /// Display cleanup: Soniox `<end>` → newline (see [normalizeSttText]).
   static String cleanTranscript(String raw) => normalizeSttText(raw);
+
+  static String formatDuration(Duration? duration) {
+    if (duration == null) return '--:--';
+    final seconds = duration.inSeconds;
+    final hours = seconds ~/ 3600;
+    final minutes = (seconds % 3600) ~/ 60;
+    final remainingSeconds = seconds % 60;
+    final minuteText = minutes.toString().padLeft(2, '0');
+    final secondText = remainingSeconds.toString().padLeft(2, '0');
+    return hours > 0
+        ? '$hours:$minuteText:$secondText'
+        : '$minuteText:$secondText';
+  }
 
   @override
   State<FilesBody> createState() => _FilesBodyState();
@@ -569,6 +583,98 @@ class _LocalExportCard extends StatelessWidget {
   final bool selected;
   final VoidCallback? onSelected;
 
+  Future<void> _rename(
+    BuildContext context,
+    RecorderController controller,
+  ) async {
+    final input = TextEditingController(
+      text: ExportCatalog.editableLabelFromPath(path),
+    );
+    String? validationError;
+    final label = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          titlePadding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+          contentPadding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+          actionsPadding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+          title: const Text(
+            '重命名录音',
+            style: TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: input,
+                autofocus: true,
+                maxLength: 100,
+                decoration: InputDecoration(
+                  labelText: '文件名',
+                  counterText: '',
+                  errorText: validationError,
+                  isDense: true,
+                ),
+                onSubmitted: (value) {
+                  try {
+                    ExportCatalog.renamedFileName(path, value);
+                    Navigator.pop(dialogContext, value);
+                  } on ArgumentError catch (error) {
+                    setDialogState(
+                      () => validationError = error.message?.toString(),
+                    );
+                  }
+                },
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                '录音编号和扩展名保持不变',
+                style: TextStyle(fontSize: 12, color: AppColors.textMuted),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                try {
+                  ExportCatalog.renamedFileName(path, input.text);
+                  Navigator.pop(dialogContext, input.text);
+                } on ArgumentError catch (error) {
+                  setDialogState(
+                    () => validationError = error.message?.toString(),
+                  );
+                }
+              },
+              child: const Text('重命名'),
+            ),
+          ],
+        ),
+      ),
+    );
+    FocusManager.instance.primaryFocus?.unfocus();
+    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    input.dispose();
+    if (label == null || !context.mounted) return;
+
+    try {
+      await controller.renameLocalExport(path, label);
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('重命名失败：$error')));
+    }
+  }
+
   Future<void> _exportTranscript(
     BuildContext context,
     String name,
@@ -653,11 +759,15 @@ class _LocalExportCard extends StatelessWidget {
     final name = path.split('/').last;
     final fileId = c.fileIdFromPath(path);
     final loaded = c.playingPath == path;
-    final playing = loaded && c.isPlaying;
     final rawText = c.transcriptForPath(path);
     final text = rawText == null ? null : FilesBody.cleanTranscript(rawText);
     final hasText = text != null && text.isNotEmpty;
     final expanded = c.expandedLocalPath == path;
+    final duration = FilesBody.formatDuration(c.localDurationForPath(path));
+    final transcribingThis = c.transcribingPath == path;
+    final transcriptionProgress = transcribingThis
+        ? c.fileTranscriptionProgress
+        : null;
 
     return SurfaceCard(
       borderColor: loaded || expanded
@@ -700,28 +810,35 @@ class _LocalExportCard extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                     Text(
-                      playing
-                          ? '正在播放'
+                      transcribingThis
+                          ? '$duration • 转写中'
                           : hasText
-                          ? '已转写 · 点开查看'
-                          : loaded
-                          ? '已加载'
-                          : '点开播放 / 转写',
+                          ? '$duration • 已转写'
+                          : duration,
                       style: TextStyle(
                         fontSize: 11,
-                        color: hasText ? AppColors.violet : AppColors.textMuted,
+                        color: transcribingThis || hasText
+                            ? AppColors.violet
+                            : AppColors.textMuted,
                       ),
                     ),
                   ],
                 ),
               ),
-              if (!selecting)
+              if (!selecting) ...[
+                IconButton(
+                  tooltip: '重命名',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _rename(context, c),
+                  icon: const Icon(Icons.edit_outlined, size: 19),
+                ),
                 Icon(
                   expanded
                       ? Icons.expand_less_rounded
                       : Icons.expand_more_rounded,
                   color: AppColors.textMuted,
                 ),
+              ],
             ],
           ),
           if (hasText && !expanded && !selecting) ...[
@@ -740,8 +857,12 @@ class _LocalExportCard extends StatelessWidget {
           if (expanded && !selecting) ...[
             const SizedBox(height: 8),
             const Divider(height: 1, color: AppColors.border),
+            if (transcriptionProgress != null) ...[
+              const SizedBox(height: 12),
+              _FileTranscriptionProgress(progress: transcriptionProgress),
+            ],
             if (hasText) ...[
-              const SizedBox(height: 10),
+              SizedBox(height: transcriptionProgress == null ? 10 : 6),
               Row(
                 children: [
                   if (c.sttConfigured)
@@ -750,10 +871,7 @@ class _LocalExportCard extends StatelessWidget {
                           ? null
                           : () => _confirmRetranscribe(context, c),
                       icon: const Icon(Icons.refresh_rounded, size: 18),
-                      label: Text(
-                        c.transcribing ? '转写中…' : '重新转写',
-                        style: const TextStyle(fontSize: 12),
-                      ),
+                      label: const Text('重新转写', style: TextStyle(fontSize: 12)),
                     ),
                   const Spacer(),
                   IconButton(
@@ -793,18 +911,19 @@ class _LocalExportCard extends StatelessWidget {
               ),
             ] else ...[
               const SizedBox(height: 8),
-              if (c.sttConfigured)
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton.icon(
-                    onPressed: c.transcribing
-                        ? null
-                        : () => c.transcribeLocalFile(path),
-                    icon: const Icon(Icons.subtitles_outlined, size: 16),
-                    label: Text(c.transcribing ? '转写中…' : '转写此文件'),
+              if (c.sttConfigured) ...[
+                if (transcriptionProgress == null)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: c.transcribing
+                          ? null
+                          : () => c.transcribeLocalFile(path),
+                      icon: const Icon(Icons.subtitles_outlined, size: 16),
+                      label: const Text('转写此文件'),
+                    ),
                   ),
-                )
-              else
+              ] else
                 const Text(
                   '在「设置」配置 API Key 后可转写此文件',
                   style: TextStyle(fontSize: 12, color: AppColors.textMuted),
@@ -813,6 +932,75 @@ class _LocalExportCard extends StatelessWidget {
             const SizedBox(height: 8),
             InlinePlayer(path: path, fileId: fileId),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _FileTranscriptionProgress extends StatelessWidget {
+  const _FileTranscriptionProgress({required this.progress});
+
+  final SttFileProgress progress;
+
+  String get _label {
+    switch (progress.stage) {
+      case SttFileStage.preparing:
+        return '正在准备音频…';
+      case SttFileStage.uploading:
+        final fraction = progress.fraction;
+        return fraction == null ? '正在上传…' : '正在上传 ${(fraction * 100).round()}%';
+      case SttFileStage.queued:
+        return '等待转写…';
+      case SttFileStage.processing:
+        return '正在转写…';
+      case SttFileStage.fetching:
+        return '正在获取结果…';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final value = progress.stage == SttFileStage.uploading
+        ? progress.fraction
+        : null;
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.violet.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.subtitles_outlined,
+                size: 17,
+                color: AppColors.violet,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                _label,
+                style: const TextStyle(
+                  color: AppColors.violet,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(3),
+            child: LinearProgressIndicator(
+              value: value,
+              minHeight: 4,
+              color: AppColors.violet,
+              backgroundColor: AppColors.violet.withValues(alpha: 0.14),
+            ),
+          ),
         ],
       ),
     );

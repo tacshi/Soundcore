@@ -4,11 +4,55 @@ import '../protocol/models.dart';
 class ExportCatalog {
   ExportCatalog._();
 
+  static final RegExp _supportedName = RegExp(
+    r'^\d+(?:_[^/\\]+)?\.(?:wav|opus(?:\.bin)?)$',
+  );
+
+  static bool isSupportedExportPath(String path) =>
+      _supportedName.hasMatch(path.split('/').last);
+
   static int? fileIdFromPath(String path) {
     final name = path.split('/').last;
     final match = RegExp(r'^(\d+)').firstMatch(name);
     if (match == null) return null;
     return int.tryParse(match.group(1)!);
+  }
+
+  static String? _suffixForPath(String path) {
+    final name = path.split('/').last;
+    for (final suffix in const ['.opus.bin', '.opus', '.wav']) {
+      if (name.endsWith(suffix)) return suffix;
+    }
+    return null;
+  }
+
+  /// Builds a user-friendly filename while retaining the leading device file
+  /// id used to match the recording with the device inventory.
+  static String renamedFileName(String path, String label) {
+    final name = path.split('/').last;
+    final id = fileIdFromPath(path);
+    if (id == null) throw ArgumentError('无法识别录音编号');
+
+    final suffix = _suffixForPath(name);
+    if (suffix == null) throw ArgumentError('不支持此文件格式');
+    final trimmed = label.trim();
+    if (trimmed.isEmpty) throw ArgumentError('请输入文件名');
+    if (trimmed.length > 100) throw ArgumentError('文件名不能超过 100 个字符');
+    if (RegExp(r'[\\/:*?"<>|\x00-\x1f]').hasMatch(trimmed)) {
+      throw ArgumentError('文件名不能包含 \\ / : * ? " < > |');
+    }
+    return '${id}_$trimmed$suffix';
+  }
+
+  static String editableLabelFromPath(String path) {
+    final name = path.split('/').last;
+    final id = fileIdFromPath(path);
+    if (id == null) return name;
+    final suffix = _suffixForPath(name);
+    if (suffix == null) return name;
+    final stem = name.substring(0, name.length - suffix.length);
+    final prefix = '${id}_';
+    return stem.startsWith(prefix) ? stem.substring(prefix.length) : '';
   }
 
   /// One local row per recording, ordered by the timestamp-shaped file id.
