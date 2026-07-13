@@ -79,18 +79,6 @@ class _NavBar extends StatelessWidget {
           color: AppColors.bgCard.withValues(alpha: 0.96),
           borderRadius: BorderRadius.circular(18),
           border: Border.all(color: AppColors.border),
-          boxShadow: [
-            BoxShadow(
-              color: const Color(0xFF0B0D12).withValues(alpha: 0.10),
-              blurRadius: 20,
-              offset: const Offset(0, 7),
-            ),
-            BoxShadow(
-              color: const Color(0xFF0B0D12).withValues(alpha: 0.04),
-              blurRadius: 6,
-              offset: const Offset(0, 2),
-            ),
-          ],
         ),
         child: Row(
           children: [

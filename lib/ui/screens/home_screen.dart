@@ -49,7 +49,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ? const _LiveSessionView(key: ValueKey('live'))
                   : const FilesBody(
                       key: ValueKey('files'),
-                      padding: EdgeInsets.fromLTRB(20, 8, 20, 110),
+                      padding: EdgeInsets.fromLTRB(20, 8, 20, 0),
                     ),
             ),
           ),
@@ -129,7 +129,7 @@ class _ConnectionHeader extends StatelessWidget {
                 Text(
                   online
                       ? (c.recording
-                            ? '录音中 · 实时同步转写'
+                            ? (c.autoTranscribe ? '实时同步转写' : '自动转写已关闭')
                             : c.isPlaying
                             ? (c.statusMessage?.startsWith('正在播放') == true
                                   ? c.statusMessage!
@@ -274,7 +274,7 @@ class _LiveSessionView extends StatelessWidget {
             ],
           ),
         ),
-        const SizedBox(height: 14),
+        const SizedBox(height: 14)._visibleWhen(c.autoTranscribe),
         SurfaceCard(
           borderColor: AppColors.violet.withValues(alpha: 0.35),
           padding: const EdgeInsets.all(16),
@@ -293,9 +293,7 @@ class _LiveSessionView extends StatelessWidget {
                     child: Text(
                       c.streamingSttActive
                           ? '转写中（${c.sttProvider.label}）'
-                          : c.autoTranscribe
-                          ? '转写预览'
-                          : '转写已关闭',
+                          : '转写预览',
                       style: const TextStyle(
                         fontWeight: FontWeight.w700,
                         fontSize: 14,
@@ -361,10 +359,14 @@ class _LiveSessionView extends StatelessWidget {
               ],
             ],
           ),
-        ),
-        const SizedBox(height: 12),
-        const TranscriptPanel(compact: true),
+        )._visibleWhen(c.autoTranscribe),
+        const SizedBox(height: 12)._visibleWhen(c.autoTranscribe),
+        const TranscriptPanel(compact: true)._visibleWhen(c.autoTranscribe),
       ],
     );
   }
+}
+
+extension on Widget {
+  Widget _visibleWhen(bool visible) => visible ? this : const SizedBox.shrink();
 }

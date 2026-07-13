@@ -44,6 +44,7 @@ class SurfaceCard extends StatelessWidget {
     this.onTap,
     this.borderColor,
     this.glow = false,
+    this.shadow = true,
   });
 
   final Widget child;
@@ -51,6 +52,7 @@ class SurfaceCard extends StatelessWidget {
   final VoidCallback? onTap;
   final Color? borderColor;
   final bool glow;
+  final bool shadow;
 
   @override
   Widget build(BuildContext context) {
@@ -61,7 +63,9 @@ class SurfaceCard extends StatelessWidget {
         color: AppColors.bgCard,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: borderColor ?? AppColors.border),
-        boxShadow: glow
+        boxShadow: !shadow
+            ? const []
+            : glow
             ? [
                 BoxShadow(
                   color: AppColors.accent.withValues(alpha: 0.14),

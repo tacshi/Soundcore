@@ -24,7 +24,7 @@ import '../widgets/widgets.dart';
 class FilesBody extends StatefulWidget {
   const FilesBody({
     super.key,
-    this.padding = const EdgeInsets.fromLTRB(20, 8, 20, 110),
+    this.padding = const EdgeInsets.fromLTRB(20, 8, 20, 0),
   });
 
   final EdgeInsets padding;
@@ -357,7 +357,7 @@ class _LocalExportsTabState extends State<_LocalExportsTab> {
         const SizedBox(height: 4),
         Expanded(
           child: ListView.builder(
-            padding: const EdgeInsets.only(bottom: 24),
+            padding: const EdgeInsets.only(bottom: 88),
             itemCount: widget.paths.length,
             itemBuilder: (context, i) {
               final path = widget.paths[i];
@@ -540,7 +540,7 @@ class _DeviceFilesTab extends StatelessWidget {
                   ),
                 )
               : ListView.separated(
-                  padding: const EdgeInsets.only(bottom: 24),
+                  padding: const EdgeInsets.only(bottom: 88),
                   itemCount: c.files.length,
                   separatorBuilder: (_, _) => const SizedBox(height: 10),
                   itemBuilder: (context, i) {
@@ -770,6 +770,7 @@ class _LocalExportCard extends StatelessWidget {
         : null;
 
     return SurfaceCard(
+      shadow: false,
       borderColor: loaded || expanded
           ? AppColors.accent.withValues(alpha: 0.5)
           : hasText
@@ -1641,6 +1642,7 @@ class _DeviceFileTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SurfaceCard(
+      shadow: false,
       borderColor: selected ? AppColors.mint.withValues(alpha: 0.55) : null,
       onTap: onTap,
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
