@@ -1,4 +1,5 @@
 import 'package:anker_recorder/ai/soniox_stt_stream.dart';
+import 'package:anker_recorder/ai/stt_types.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -7,8 +8,7 @@ void main() {
       apiKey: 'test',
       language: 'fr',
       languageHints: const ['fr', 'de'],
-      translationLanguageA: 'zh',
-      translationLanguageB: 'en',
+      translation: const SonioxTranslationConfig.twoWay('zh', 'en'),
     );
 
     expect(session.configForTesting['language_hints'], ['zh', 'en']);
@@ -16,6 +16,21 @@ void main() {
       'type': 'two_way',
       'language_a': 'zh',
       'language_b': 'en',
+    });
+  });
+
+  test('one-way translation preserves recognition hints and target', () {
+    final session = SonioxSttStreamSession(
+      apiKey: 'test',
+      language: 'en',
+      languageHints: const ['zh', 'en', 'ja'],
+      translation: const SonioxTranslationConfig.oneWay('ZH'),
+    );
+
+    expect(session.configForTesting['language_hints'], ['zh', 'en', 'ja']);
+    expect(session.configForTesting['translation'], {
+      'type': 'one_way',
+      'target_language': 'zh',
     });
   });
 

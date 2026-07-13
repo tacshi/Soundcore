@@ -1,32 +1,53 @@
+import 'package:anker_recorder/ai/stt_types.dart';
 import 'package:anker_recorder/state/app_settings_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('communication settings use backward-compatible defaults', () {
+  test('translation settings use backward-compatible defaults', () {
     final settings = AppSettings.fromJson(const {});
 
-    expect(settings.communicationModeEnabled, isFalse);
+    expect(settings.sttMode, SttDisplayMode.transcription);
+    expect(settings.translationTargetLanguage, 'zh');
     expect(settings.ownerLanguage, 'zh');
     expect(settings.guestLanguage, 'en');
   });
 
-  test('communication settings round-trip through JSON', () {
+  test('translation settings round-trip through JSON', () {
     const original = AppSettings(
-      communicationModeEnabled: true,
+      sttMode: SttDisplayMode.translation,
+      translationTargetLanguage: 'ja',
       ownerLanguage: 'ja',
       guestLanguage: 'ko',
     );
 
     final restored = AppSettings.fromJson(original.toJson());
 
-    expect(restored.communicationModeEnabled, isTrue);
+    expect(restored.sttMode, SttDisplayMode.translation);
+    expect(restored.translationTargetLanguage, 'ja');
     expect(restored.ownerLanguage, 'ja');
     expect(restored.guestLanguage, 'ko');
   });
 
-  test('duplicate persisted languages fall back to a valid pair', () {
+  test('legacy communication switch migrates to conversation mode', () {
     final settings = AppSettings.fromJson(const {
       'communicationModeEnabled': true,
+    });
+
+    expect(settings.sttMode, SttDisplayMode.conversation);
+  });
+
+  test('explicit display mode takes precedence over legacy switch', () {
+    final settings = AppSettings.fromJson(const {
+      'sttMode': 'translation',
+      'communicationModeEnabled': true,
+    });
+
+    expect(settings.sttMode, SttDisplayMode.translation);
+  });
+
+  test('duplicate persisted languages fall back to a valid pair', () {
+    final settings = AppSettings.fromJson(const {
+      'sttMode': 'conversation',
       'ownerLanguage': 'en',
       'guestLanguage': 'en',
     });

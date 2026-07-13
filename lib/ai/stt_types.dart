@@ -25,6 +25,50 @@ enum SttProvider {
   }
 }
 
+enum SttDisplayMode { transcription, translation, conversation }
+
+enum SonioxTranslationKind { none, oneWay, twoWay }
+
+class SonioxTranslationConfig {
+  const SonioxTranslationConfig.none()
+    : kind = SonioxTranslationKind.none,
+      targetLanguage = null,
+      languageA = null,
+      languageB = null;
+
+  const SonioxTranslationConfig.oneWay(this.targetLanguage)
+    : kind = SonioxTranslationKind.oneWay,
+      languageA = null,
+      languageB = null;
+
+  const SonioxTranslationConfig.twoWay(this.languageA, this.languageB)
+    : kind = SonioxTranslationKind.twoWay,
+      targetLanguage = null;
+
+  final SonioxTranslationKind kind;
+  final String? targetLanguage;
+  final String? languageA;
+  final String? languageB;
+
+  Map<String, dynamic>? toApiJson() {
+    switch (kind) {
+      case SonioxTranslationKind.none:
+        return null;
+      case SonioxTranslationKind.oneWay:
+        final target = targetLanguage?.trim().toLowerCase();
+        if (target == null || target.isEmpty) return null;
+        return {'type': 'one_way', 'target_language': target};
+      case SonioxTranslationKind.twoWay:
+        final a = languageA?.trim().toLowerCase();
+        final b = languageB?.trim().toLowerCase();
+        if (a == null || a.isEmpty || b == null || b.isEmpty || a == b) {
+          return null;
+        }
+        return {'type': 'two_way', 'language_a': a, 'language_b': b};
+    }
+  }
+}
+
 enum SttFileStage { preparing, uploading, queued, processing, fetching }
 
 class SttFileProgress {
@@ -104,12 +148,21 @@ class SttTranslationTurn {
     required this.sourceLanguage,
     required this.text,
     required this.isFinal,
+    this.sourceText = '',
   });
 
   final String targetLanguage;
   final String sourceLanguage;
   final String text;
   final bool isFinal;
+  final String sourceText;
+}
+
+class SttSourceChunk {
+  const SttSourceChunk({required this.language, required this.text});
+
+  final String language;
+  final String text;
 }
 
 /// Group contiguous Soniox translation tokens into directional turns.
@@ -121,38 +174,71 @@ List<SttTranslationTurn> renderSonioxTranslationTurns(
 ) {
   final turns = <_MutableTranslationTurn>[];
   _MutableTranslationTurn? current;
+  final source = StringBuffer();
+  String sourceLanguage = '';
+  var previousWasTranslation = false;
 
   for (final token in tokens) {
-    if (token is! Map || token['translation_status'] != 'translation') {
+    if (token is! Map) {
       current = null;
+      source.clear();
+      sourceLanguage = '';
+      previousWasTranslation = false;
       continue;
     }
 
     final text = '${token['text'] ?? ''}';
-    final targetLanguage = '${token['language'] ?? ''}'.trim().toLowerCase();
-    final sourceLanguage = '${token['source_language'] ?? ''}'
-        .trim()
-        .toLowerCase();
-    if (text.isEmpty || targetLanguage.isEmpty || sourceLanguage.isEmpty) {
-      current = null;
-      continue;
-    }
     if (RegExp(r'^<end>$', caseSensitive: false).hasMatch(text.trim())) {
       current = null;
+      source.clear();
+      sourceLanguage = '';
+      previousWasTranslation = false;
+      continue;
+    }
+
+    if (token['translation_status'] != 'translation') {
+      current = null;
+      final language = '${token['language'] ?? ''}'.trim().toLowerCase();
+      if (text.isEmpty || language.isEmpty) {
+        previousWasTranslation = false;
+        continue;
+      }
+      if (previousWasTranslation || sourceLanguage != language) {
+        source.clear();
+        sourceLanguage = language;
+      }
+      source.write(text);
+      previousWasTranslation = false;
+      continue;
+    }
+
+    final targetLanguage = '${token['language'] ?? ''}'.trim().toLowerCase();
+    final translatedSourceLanguage = '${token['source_language'] ?? ''}'
+        .trim()
+        .toLowerCase();
+    if (text.isEmpty ||
+        targetLanguage.isEmpty ||
+        translatedSourceLanguage.isEmpty) {
+      current = null;
+      previousWasTranslation = true;
       continue;
     }
 
     if (current == null ||
         current.targetLanguage != targetLanguage ||
-        current.sourceLanguage != sourceLanguage) {
+        current.sourceLanguage != translatedSourceLanguage) {
       current = _MutableTranslationTurn(
         targetLanguage: targetLanguage,
-        sourceLanguage: sourceLanguage,
+        sourceLanguage: translatedSourceLanguage,
+        sourceText: sourceLanguage == translatedSourceLanguage
+            ? normalizeSttText(source.toString())
+            : '',
       );
       turns.add(current);
     }
     current.text.write(text);
     current.isFinal = current.isFinal && token['is_final'] == true;
+    previousWasTranslation = true;
   }
 
   return [
@@ -163,18 +249,53 @@ List<SttTranslationTurn> renderSonioxTranslationTurns(
           sourceLanguage: turn.sourceLanguage,
           text: normalizeSttText(turn.text.toString()),
           isFinal: turn.isFinal,
+          sourceText: turn.sourceText,
         ),
   ];
+}
+
+/// Return source speech at the tail of a snapshot that has not received any
+/// translation tokens yet.
+SttSourceChunk? findSonioxPendingTranslationSource(Iterable<dynamic> tokens) {
+  final source = StringBuffer();
+  String language = '';
+
+  for (final token in tokens) {
+    if (token is! Map) {
+      source.clear();
+      language = '';
+      continue;
+    }
+    final text = '${token['text'] ?? ''}';
+    if (RegExp(r'^<end>$', caseSensitive: false).hasMatch(text.trim()) ||
+        token['translation_status'] == 'translation') {
+      source.clear();
+      language = '';
+      continue;
+    }
+    final tokenLanguage = '${token['language'] ?? ''}'.trim().toLowerCase();
+    if (text.isEmpty || tokenLanguage.isEmpty) continue;
+    if (language != tokenLanguage) {
+      source.clear();
+      language = tokenLanguage;
+    }
+    source.write(text);
+  }
+
+  final text = normalizeSttText(source.toString());
+  return text.isEmpty ? null : SttSourceChunk(language: language, text: text);
 }
 
 class _MutableTranslationTurn {
   _MutableTranslationTurn({
     required this.targetLanguage,
     required this.sourceLanguage,
+    required this.sourceText,
   });
 
   final String targetLanguage;
   final String sourceLanguage;
+  final String sourceText;
   final StringBuffer text = StringBuffer();
   bool isFinal = true;
 }
@@ -206,6 +327,7 @@ class SttStreamEvent {
     this.durationSec,
     this.error,
     this.translationTurns = const [],
+    this.pendingTranslationSource,
   });
 
   /// `created` | `partial` | `done` | `error` | `closed`
@@ -216,6 +338,7 @@ class SttStreamEvent {
   final double? durationSec;
   final String? error;
   final List<SttTranslationTurn> translationTurns;
+  final SttSourceChunk? pendingTranslationSource;
 }
 
 /// Common interface for PCM16 LE streaming STT (xAI WS / Soniox WS).

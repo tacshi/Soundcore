@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../ai/soniox_languages.dart';
+import '../../ai/stt_types.dart';
 import '../../state/recorder_controller.dart';
 import '../../theme/app_theme.dart';
 import '../widgets/scan_sheet.dart';
@@ -182,6 +184,7 @@ class _LiveSessionView extends StatelessWidget {
     final draft = c.transcript.isNotEmpty
         ? c.transcript
         : (c.transcriptPartial ?? '');
+    final targetLanguage = sonioxLanguageFor(c.translationTargetLanguage);
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 4, 20, 100),
@@ -283,17 +286,23 @@ class _LiveSessionView extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  const Icon(
-                    Icons.subtitles_outlined,
+                  Icon(
+                    c.translationModeActive
+                        ? Icons.translate_rounded
+                        : Icons.subtitles_outlined,
                     color: AppColors.violet,
                     size: 20,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      c.streamingSttActive
-                          ? '转写中（${c.sttProvider.label}）'
-                          : '转写预览',
+                      c.translationModeActive
+                          ? (c.streamingSttActive
+                                ? '翻译中（Soniox → ${targetLanguage.name}）'
+                                : '翻译预览 · ${targetLanguage.name}')
+                          : (c.streamingSttActive
+                                ? '转写中（${c.sttProvider.label}）'
+                                : '转写预览'),
                       style: const TextStyle(
                         fontWeight: FontWeight.w700,
                         fontSize: 14,
@@ -323,22 +332,30 @@ class _LiveSessionView extends StatelessWidget {
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: AppColors.border),
                 ),
-                child: SingleChildScrollView(
-                  child: Text(
-                    draft.isEmpty
-                        ? (c.sttConfigured
-                              ? '开始说话后，这里会实时显示转写文字…'
-                              : '请在「设置」中配置 ${c.sttProvider.envKeyName}')
-                        : draft,
-                    style: TextStyle(
-                      fontSize: 16,
-                      height: 1.5,
-                      color: draft.isEmpty
-                          ? AppColors.textMuted
-                          : AppColors.textPrimary,
-                    ),
-                  ),
-                ),
+                child: c.translationModeActive
+                    ? _LiveTranslationPreview(
+                        turns: c.translationTurns,
+                        sourceDraft: draft,
+                        pendingSource: c.pendingTranslationSource,
+                        targetLanguage: targetLanguage,
+                        configured: c.sttConfigured,
+                      )
+                    : SingleChildScrollView(
+                        child: Text(
+                          draft.isEmpty
+                              ? (c.sttConfigured
+                                    ? '开始说话后，这里会实时显示转写文字…'
+                                    : '请在「设置」中配置 ${c.sttProvider.envKeyName}')
+                              : draft,
+                          style: TextStyle(
+                            fontSize: 16,
+                            height: 1.5,
+                            color: draft.isEmpty
+                                ? AppColors.textMuted
+                                : AppColors.textPrimary,
+                          ),
+                        ),
+                      ),
               ),
               if (c.transcriptError != null) ...[
                 const SizedBox(height: 8),
@@ -347,7 +364,7 @@ class _LiveSessionView extends StatelessWidget {
                   style: const TextStyle(color: AppColors.coral, fontSize: 12),
                 ),
               ],
-              if (draft.isNotEmpty) ...[
+              if (draft.isNotEmpty || c.translationTurns.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Align(
                   alignment: Alignment.centerLeft,
@@ -363,6 +380,175 @@ class _LiveSessionView extends StatelessWidget {
         const SizedBox(height: 12)._visibleWhen(c.autoTranscribe),
         const TranscriptPanel(compact: true)._visibleWhen(c.autoTranscribe),
       ],
+    );
+  }
+}
+
+class _LiveTranslationPreview extends StatelessWidget {
+  const _LiveTranslationPreview({
+    required this.turns,
+    required this.sourceDraft,
+    required this.pendingSource,
+    required this.targetLanguage,
+    required this.configured,
+  });
+
+  final List<SttTranslationTurn> turns;
+  final String sourceDraft;
+  final SttSourceChunk? pendingSource;
+  final SonioxLanguage targetLanguage;
+  final bool configured;
+
+  @override
+  Widget build(BuildContext context) {
+    if (turns.isEmpty) {
+      final sourceText = pendingSource?.text ?? sourceDraft;
+      if (sourceText.isNotEmpty) {
+        return SingleChildScrollView(
+          reverse: true,
+          child: Column(
+            key: const ValueKey('translation-pending'),
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Row(
+                children: [
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.violet,
+                    ),
+                  ),
+                  SizedBox(width: 8),
+                  Text(
+                    '正在翻译…',
+                    style: TextStyle(
+                      color: AppColors.violet,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                sourceText,
+                key: const ValueKey('translation-original'),
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 14,
+                  height: 1.45,
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+      return Text(
+        configured
+            ? '开始说话后，这里会显示${targetLanguage.name}翻译…'
+            : '请在「设置」中配置 SONIOX_API_KEY',
+        key: const ValueKey('translation-empty'),
+        style: const TextStyle(
+          fontSize: 16,
+          height: 1.5,
+          color: AppColors.textMuted,
+        ),
+      );
+    }
+
+    final latest = turns.last;
+    final completed = turns
+        .take(turns.length - 1)
+        .where((turn) => turn.isFinal)
+        .toList(growable: false);
+    final previousStart = completed.length > 2 ? completed.length - 2 : 0;
+    final previous = completed.skip(previousStart);
+    final pending = pendingSource;
+    final original =
+        pending?.text ??
+        (latest.sourceText.isNotEmpty ? latest.sourceText : sourceDraft);
+    final sourceLanguage = sonioxLanguageFor(
+      pending?.language ?? latest.sourceLanguage,
+    );
+
+    return SingleChildScrollView(
+      reverse: true,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final turn in previous) ...[
+            Text(
+              turn.text,
+              style: const TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 13,
+                height: 1.35,
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+          Text(
+            latest.text,
+            key: const ValueKey('translation-latest'),
+            style: const TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 23,
+              fontWeight: FontWeight.w700,
+              height: 1.35,
+            ),
+          ),
+          if (!latest.isFinal) ...[
+            const SizedBox(height: 5),
+            const Text(
+              '翻译中…',
+              style: TextStyle(color: AppColors.violet, fontSize: 11),
+            ),
+          ],
+          if (pending != null) ...[
+            const SizedBox(height: 12),
+            const Row(
+              children: [
+                SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: AppColors.violet,
+                  ),
+                ),
+                SizedBox(width: 7),
+                Text(
+                  '正在翻译新原文…',
+                  style: TextStyle(color: AppColors.violet, fontSize: 11),
+                ),
+              ],
+            ),
+          ],
+          if (original.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            Text(
+              '${pending == null ? '原文' : '待翻译原文'} · ${sourceLanguage.name}',
+              style: const TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              original,
+              key: const ValueKey('translation-original'),
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 14,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

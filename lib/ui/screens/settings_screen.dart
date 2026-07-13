@@ -111,19 +111,12 @@ class SettingsScreen extends StatelessWidget {
                     ],
                   ),
                   const Divider(height: 28),
-                  _SettingsSwitch(
-                    title: '交流模式',
-                    subtitle: c.sttProvider != SttProvider.soniox
-                        ? '仅 Soniox 支持双向实时翻译'
-                        : !c.autoTranscribe
-                        ? '请先开启自动转写'
-                        : '面对面显示双方语言的实时翻译',
-                    value: c.communicationModeEnabled,
-                    onChanged: c.communicationModeAvailable
-                        ? c.setCommunicationMode
-                        : null,
-                  ),
-                  if (c.communicationModeEnabled) ...[
+                  _SttModeSelector(controller: c),
+                  if (c.sttMode == SttDisplayMode.translation) ...[
+                    const SizedBox(height: 14),
+                    _TranslationLanguageSettings(controller: c),
+                  ],
+                  if (c.sttMode == SttDisplayMode.conversation) ...[
                     const SizedBox(height: 14),
                     _CommunicationLanguageSettings(controller: c),
                   ],
@@ -132,6 +125,92 @@ class SettingsScreen extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _SttModeSelector extends StatelessWidget {
+  const _SttModeSelector({required this.controller});
+
+  final RecorderController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = controller;
+    final subtitle = c.sttProvider != SttProvider.soniox
+        ? '翻译和交流模式仅支持 Soniox'
+        : !c.autoTranscribe
+        ? '请先开启自动转写'
+        : '翻译为单向翻译，交流为面对面双向翻译';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          '实时模式',
+          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          subtitle,
+          style: const TextStyle(
+            color: AppColors.textMuted,
+            fontSize: 12,
+            height: 1.3,
+          ),
+        ),
+        const SizedBox(height: 10),
+        SegmentedButton<SttDisplayMode>(
+          key: const ValueKey('stt-display-mode-selector'),
+          segments: [
+            const ButtonSegment(
+              value: SttDisplayMode.transcription,
+              label: Text('转写'),
+              icon: Icon(Icons.subtitles_outlined),
+            ),
+            ButtonSegment(
+              value: SttDisplayMode.translation,
+              label: const Text('翻译'),
+              icon: const Icon(Icons.translate_rounded),
+              enabled: c.sonioxTranslationModeAvailable,
+            ),
+            ButtonSegment(
+              value: SttDisplayMode.conversation,
+              label: const Text('交流'),
+              icon: const Icon(Icons.record_voice_over_outlined),
+              enabled: c.sonioxTranslationModeAvailable,
+            ),
+          ],
+          selected: {c.sttMode},
+          showSelectedIcon: false,
+          onSelectionChanged: (selection) {
+            if (selection.isNotEmpty) c.setSttMode(selection.first);
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _TranslationLanguageSettings extends StatelessWidget {
+  const _TranslationLanguageSettings({required this.controller});
+
+  final RecorderController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.violet.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.violet.withValues(alpha: 0.24)),
+      ),
+      child: _LanguageField(
+        label: '目标语言',
+        code: controller.translationTargetLanguage,
+        excludedCode: null,
+        onSelected: controller.setTranslationTargetLanguage,
       ),
     );
   }
@@ -250,7 +329,7 @@ class _LanguageField extends StatelessWidget {
 
   final String label;
   final String code;
-  final String excludedCode;
+  final String? excludedCode;
   final ValueChanged<String> onSelected;
 
   @override
@@ -315,7 +394,7 @@ class _LanguagePickerSheet extends StatefulWidget {
 
   final String title;
   final String selectedCode;
-  final String excludedCode;
+  final String? excludedCode;
 
   @override
   State<_LanguagePickerSheet> createState() => _LanguagePickerSheetState();

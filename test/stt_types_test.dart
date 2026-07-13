@@ -71,11 +71,84 @@ void main() {
     expect(turns[0].targetLanguage, 'zh');
     expect(turns[0].sourceLanguage, 'en');
     expect(turns[0].text, '早上好');
+    expect(turns[0].sourceText, 'Good morning');
     expect(turns[0].isFinal, isTrue);
     expect(turns[1].targetLanguage, 'en');
     expect(turns[1].sourceLanguage, 'zh');
     expect(turns[1].text, 'Hello');
+    expect(turns[1].sourceText, '你好');
     expect(turns[1].isFinal, isFalse);
+  });
+
+  test('pairs one-way translations with preceding multilingual chunks', () {
+    final turns = renderSonioxTranslationTurns([
+      {
+        'text': 'Hola',
+        'translation_status': 'original',
+        'language': 'es',
+        'is_final': true,
+      },
+      {
+        'text': '你好',
+        'translation_status': 'translation',
+        'language': 'zh',
+        'source_language': 'es',
+        'is_final': true,
+      },
+      {
+        'text': 'Bonjour',
+        'translation_status': 'original',
+        'language': 'fr',
+        'is_final': true,
+      },
+      {
+        'text': '早上好',
+        'translation_status': 'translation',
+        'language': 'zh',
+        'source_language': 'fr',
+        'is_final': false,
+      },
+    ]);
+
+    expect(turns, hasLength(2));
+    expect(turns[0].sourceText, 'Hola');
+    expect(turns[0].sourceLanguage, 'es');
+    expect(turns[1].sourceText, 'Bonjour');
+    expect(turns[1].sourceLanguage, 'fr');
+    expect(turns[1].isFinal, isFalse);
+  });
+
+  test('keeps unmatched translation tokens without inventing source text', () {
+    final turns = renderSonioxTranslationTurns([
+      {
+        'text': '译文',
+        'translation_status': 'translation',
+        'language': 'zh',
+        'source_language': 'de',
+        'is_final': true,
+      },
+      'malformed',
+    ]);
+
+    expect(turns.single.text, '译文');
+    expect(turns.single.sourceText, isEmpty);
+  });
+
+  test('finds source speech still waiting for translation', () {
+    final pending = findSonioxPendingTranslationSource([
+      {'text': 'Hello', 'translation_status': 'original', 'language': 'en'},
+      {
+        'text': '你好',
+        'translation_status': 'translation',
+        'language': 'zh',
+        'source_language': 'en',
+      },
+      {'text': 'Bon', 'translation_status': 'original', 'language': 'fr'},
+      {'text': 'jour', 'translation_status': 'original', 'language': 'fr'},
+    ]);
+
+    expect(pending?.language, 'fr');
+    expect(pending?.text, 'Bonjour');
   });
 
   test('recomputed snapshots replace a partial translation turn', () {

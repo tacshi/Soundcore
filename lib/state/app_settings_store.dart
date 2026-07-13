@@ -58,7 +58,8 @@ class AppSettings {
     this.autoTranscribe = true,
     this.autoRealtime = true,
     this.transcriptLanguage = 'zh',
-    this.communicationModeEnabled = false,
+    this.sttMode = SttDisplayMode.transcription,
+    this.translationTargetLanguage = 'zh',
     this.ownerLanguage = 'zh',
     this.guestLanguage = 'en',
   });
@@ -69,7 +70,8 @@ class AppSettings {
   final bool autoTranscribe;
   final bool autoRealtime;
   final String transcriptLanguage;
-  final bool communicationModeEnabled;
+  final SttDisplayMode sttMode;
+  final String translationTargetLanguage;
   final String ownerLanguage;
   final String guestLanguage;
 
@@ -80,7 +82,8 @@ class AppSettings {
     bool? autoTranscribe,
     bool? autoRealtime,
     String? transcriptLanguage,
-    bool? communicationModeEnabled,
+    SttDisplayMode? sttMode,
+    String? translationTargetLanguage,
     String? ownerLanguage,
     String? guestLanguage,
     bool clearXai = false,
@@ -93,8 +96,9 @@ class AppSettings {
       autoTranscribe: autoTranscribe ?? this.autoTranscribe,
       autoRealtime: autoRealtime ?? this.autoRealtime,
       transcriptLanguage: transcriptLanguage ?? this.transcriptLanguage,
-      communicationModeEnabled:
-          communicationModeEnabled ?? this.communicationModeEnabled,
+      sttMode: sttMode ?? this.sttMode,
+      translationTargetLanguage:
+          translationTargetLanguage ?? this.translationTargetLanguage,
       ownerLanguage: ownerLanguage ?? this.ownerLanguage,
       guestLanguage: guestLanguage ?? this.guestLanguage,
     );
@@ -108,7 +112,8 @@ class AppSettings {
     'autoTranscribe': autoTranscribe,
     'autoRealtime': autoRealtime,
     'transcriptLanguage': transcriptLanguage,
-    'communicationModeEnabled': communicationModeEnabled,
+    'sttMode': sttMode.name,
+    'translationTargetLanguage': translationTargetLanguage,
     'ownerLanguage': ownerLanguage,
     'guestLanguage': guestLanguage,
   };
@@ -118,6 +123,13 @@ class AppSettings {
     final provider = SttProvider.values.firstWhere(
       (e) => e.name == providerName,
       orElse: () => SttProvider.soniox,
+    );
+    final modeName = _str(map['sttMode']);
+    final sttMode = SttDisplayMode.values.firstWhere(
+      (mode) => mode.name == modeName,
+      orElse: () => map['communicationModeEnabled'] == true
+          ? SttDisplayMode.conversation
+          : SttDisplayMode.transcription,
     );
     var ownerLanguage = (_str(map['ownerLanguage']) ?? 'zh').toLowerCase();
     var guestLanguage = (_str(map['guestLanguage']) ?? 'en').toLowerCase();
@@ -132,7 +144,9 @@ class AppSettings {
       autoTranscribe: map['autoTranscribe'] != false,
       autoRealtime: map['autoRealtime'] != false,
       transcriptLanguage: _str(map['transcriptLanguage']) ?? 'zh',
-      communicationModeEnabled: map['communicationModeEnabled'] == true,
+      sttMode: sttMode,
+      translationTargetLanguage:
+          (_str(map['translationTargetLanguage']) ?? 'zh').toLowerCase(),
       ownerLanguage: ownerLanguage,
       guestLanguage: guestLanguage,
     );
