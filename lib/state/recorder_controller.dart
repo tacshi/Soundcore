@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../ai/soniox_stt.dart';
 import '../ai/soniox_stt_stream.dart';
+import '../ai/soniox_languages.dart';
 import '../ai/stt_types.dart';
 import '../ai/xai_stt.dart';
 import '../ai/xai_stt_stream.dart';
@@ -33,7 +34,8 @@ import 'transcript_store.dart';
 enum AppPhase { idle, scanning, connecting, ready, busy }
 
 class RecorderController extends ChangeNotifier {
-  RecorderController({BleService? ble}) : _ble = ble ?? BleService() {
+  RecorderController({BleService? ble, bool loadPersistedState = true})
+    : _ble = ble ?? BleService() {
     _subs.add(
       _ble.scanResults.listen((list) {
         devices = list;
@@ -153,10 +155,12 @@ class RecorderController extends ChangeNotifier {
     );
     _subs.add(_realtime.stateStream.listen(_onRealtimeState));
     _wirePlayer();
-    unawaited(_loadPersistedSettings());
-    unawaited(_loadPersistedDevice());
-    unawaited(_loadLocalExports());
-    _transcriptsLoaded = _loadPersistedTranscripts();
+    if (loadPersistedState) {
+      unawaited(_loadPersistedSettings());
+      unawaited(_loadPersistedDevice());
+      unawaited(_loadLocalExports());
+      _transcriptsLoaded = _loadPersistedTranscripts();
+    }
   }
 
   Future<void> _loadPersistedSettings() async {
@@ -166,6 +170,16 @@ class RecorderController extends ChangeNotifier {
     autoTranscribe = s.autoTranscribe;
     autoRealtime = s.autoRealtime;
     transcriptLanguage = s.transcriptLanguage;
+    ownerLanguage = isSonioxLanguage(s.ownerLanguage)
+        ? s.ownerLanguage.toLowerCase()
+        : 'zh';
+    guestLanguage = isSonioxLanguage(s.guestLanguage)
+        ? s.guestLanguage.toLowerCase()
+        : 'en';
+    if (ownerLanguage == guestLanguage) {
+      ownerLanguage = 'zh';
+      guestLanguage = 'en';
+    }
     // Prefer saved provider when its key is available; else pick configured one.
     final xai = _xaiStt.isConfigured;
     final soniox = _sonioxStt.isConfigured;
@@ -180,6 +194,10 @@ class RecorderController extends ChangeNotifier {
     } else {
       sttProvider = SttProvider.soniox;
     }
+    communicationModeEnabled =
+        s.communicationModeEnabled &&
+        autoTranscribe &&
+        sttProvider == SttProvider.soniox;
     notifyListeners();
   }
 
@@ -192,6 +210,9 @@ class RecorderController extends ChangeNotifier {
         autoTranscribe: autoTranscribe,
         autoRealtime: autoRealtime,
         transcriptLanguage: transcriptLanguage,
+        communicationModeEnabled: communicationModeEnabled,
+        ownerLanguage: ownerLanguage,
+        guestLanguage: guestLanguage,
       ),
     );
   }
@@ -283,7 +304,10 @@ class RecorderController extends ChangeNotifier {
       final path = s.path!;
       _registerExportedPaths([path]);
       // Prefer low-latency PCM stream STT; fall back to rolling Ogg batch.
-      if (s.active && autoTranscribe && !_streamSttPreferred) {
+      if (s.active &&
+          autoTranscribe &&
+          !_streamSttPreferred &&
+          !communicationModeActive) {
         unawaited(
           _maybeTranscribeRolling(path, s.bytesReceived, finalPass: false),
         );
@@ -357,6 +381,10 @@ class RecorderController extends ChangeNotifier {
     if (!_preferStreamStt) return;
     if (!_opusPcm.ensureStarted()) {
       _preferStreamStt = false;
+      if (communicationModeActive) {
+        transcriptError = '交流模式无法启动实时音频解码';
+        notifyListeners();
+      }
       return;
     }
     final pcm = _opusPcm.decodeFrame(frame);
@@ -395,6 +423,10 @@ class RecorderController extends ChangeNotifier {
     if (key == null) return false;
     if (!_opusPcm.ensureStarted()) {
       _preferStreamStt = false;
+      if (communicationModeActive) {
+        transcriptError = '交流模式无法启动实时音频解码';
+        notifyListeners();
+      }
       return false;
     }
 
@@ -418,7 +450,9 @@ class RecorderController extends ChangeNotifier {
       streamingSttActive = false;
       _preferStreamStt = false;
       _pendingPcm.clear();
-      transcriptError = '实时转写连接失败（${sttProvider.label}），将回退批量转写：$e';
+      transcriptError = communicationModeActive
+          ? '交流模式连接失败：$e'
+          : '实时转写连接失败（${sttProvider.label}），将回退批量转写：$e';
       _sttStream = null;
       notifyListeners();
       return false;
@@ -430,11 +464,16 @@ class RecorderController extends ChangeNotifier {
   SttStreamSession _createStreamSession(String key) {
     switch (sttProvider) {
       case SttProvider.soniox:
+        final communication = communicationModeActive;
         return SonioxSttStreamSession(
           apiKey: key,
           sampleRate: 16000,
-          language: _sttLanguageParam,
-          languageHints: _sonioxLanguageHints,
+          language: communication ? null : _sttLanguageParam,
+          languageHints: communication
+              ? [ownerLanguage, guestLanguage]
+              : _sonioxLanguageHints,
+          translationLanguageA: communication ? ownerLanguage : null,
+          translationLanguageB: communication ? guestLanguage : null,
         );
       case SttProvider.xai:
         return XaiSttStreamSession(
@@ -456,9 +495,25 @@ class RecorderController extends ChangeNotifier {
   }
 
   void _onSttStreamEvent(SttStreamEvent e) {
+    final translationSnapshotUpdated =
+        communicationModeActive && (e.type == 'partial' || e.type == 'done');
+    if (translationSnapshotUpdated) {
+      ownerTranslationTurns = e.translationTurns
+          .where((turn) => turn.targetLanguage == ownerLanguage)
+          .toList(growable: false);
+      guestTranslationTurns = e.translationTurns
+          .where((turn) => turn.targetLanguage == guestLanguage)
+          .toList(growable: false);
+    }
     switch (e.type) {
       case 'partial':
-        if (e.text.isEmpty) return;
+        if (e.text.isEmpty) {
+          if (translationSnapshotUpdated) {
+            transcribing = true;
+            notifyListeners();
+          }
+          return;
+        }
         final incoming = normalizeSttText(e.text);
         if (incoming.isEmpty) return;
         if (e.speechFinal) {
@@ -492,7 +547,9 @@ class RecorderController extends ChangeNotifier {
             : '实时转写完成（${sttProvider.label}）';
         notifyListeners();
       case 'error':
-        transcriptError = e.error ?? 'STT stream error';
+        transcriptError = communicationModeActive
+            ? '交流模式错误：${e.error ?? 'Soniox stream error'}'
+            : (e.error ?? 'STT stream error');
         streamingSttActive = false;
         _preferStreamStt = false;
         notifyListeners();
@@ -549,6 +606,8 @@ class RecorderController extends ChangeNotifier {
   void setAutoTranscribe(bool v) {
     autoTranscribe = v;
     if (!v) {
+      communicationModeEnabled = false;
+      _resetCommunicationTurns();
       unawaited(_finishStreamStt());
     }
     notifyListeners();
@@ -569,9 +628,19 @@ class RecorderController extends ChangeNotifier {
     }
   }
 
-  /// True while hardware recording, BLE realtime pull, or live STT is active.
+  /// Background stream finalization can outlive a recorder disconnect after a
+  /// long take; it must not keep the live page open once the device is gone.
   bool get isLiveSession =>
-      recording || realtimeState.active || streamingSttActive;
+      connected && (recording || realtimeState.active || streamingSttActive);
+
+  bool get communicationModeAvailable =>
+      autoTranscribe && sttProvider == SttProvider.soniox;
+
+  bool get communicationModeActive =>
+      communicationModeEnabled && communicationModeAvailable;
+
+  bool get isCommunicationLiveSession =>
+      communicationModeActive && isLiveSession;
 
   void setTranscriptLanguage(String code) {
     transcriptLanguage = code;
@@ -584,6 +653,10 @@ class RecorderController extends ChangeNotifier {
     // Tear down live stream when switching backends mid-session.
     unawaited(_finishStreamStt());
     sttProvider = p;
+    if (p != SttProvider.soniox) {
+      communicationModeEnabled = false;
+      _resetCommunicationTurns();
+    }
     _preferStreamStt = true;
     transcriptError = null;
     notifyListeners();
@@ -633,7 +706,51 @@ class RecorderController extends ChangeNotifier {
     transcript = '';
     transcriptPartial = null;
     transcriptError = null;
+    _resetCommunicationTurns();
     notifyListeners();
+  }
+
+  void setCommunicationMode(bool enabled) {
+    if (enabled && !communicationModeAvailable) return;
+    if (communicationModeEnabled == enabled) return;
+    communicationModeEnabled = enabled;
+    _resetCommunicationTurns();
+    notifyListeners();
+    unawaited(_persistSettings());
+  }
+
+  void setOwnerLanguage(String code) {
+    final normalized = code.trim().toLowerCase();
+    if (!isSonioxLanguage(normalized) || normalized == guestLanguage) return;
+    if (ownerLanguage == normalized) return;
+    ownerLanguage = normalized;
+    _resetCommunicationTurns();
+    notifyListeners();
+    unawaited(_persistSettings());
+  }
+
+  void setGuestLanguage(String code) {
+    final normalized = code.trim().toLowerCase();
+    if (!isSonioxLanguage(normalized) || normalized == ownerLanguage) return;
+    if (guestLanguage == normalized) return;
+    guestLanguage = normalized;
+    _resetCommunicationTurns();
+    notifyListeners();
+    unawaited(_persistSettings());
+  }
+
+  void swapCommunicationLanguages() {
+    final previousOwner = ownerLanguage;
+    ownerLanguage = guestLanguage;
+    guestLanguage = previousOwner;
+    _resetCommunicationTurns();
+    notifyListeners();
+    unawaited(_persistSettings());
+  }
+
+  void _resetCommunicationTurns() {
+    ownerTranslationTurns = const [];
+    guestTranslationTurns = const [];
   }
 
   /// Fresh recording session: clear live draft and STT stream (keep per-file history).
@@ -641,6 +758,7 @@ class RecorderController extends ChangeNotifier {
     transcript = '';
     transcriptPartial = null;
     transcriptError = null;
+    _resetCommunicationTurns();
     _lastSttBytes = 0;
     _lastSttAt = DateTime.fromMillisecondsSinceEpoch(0);
     pcmFramesDecoded = 0;
@@ -908,6 +1026,11 @@ class RecorderController extends ChangeNotifier {
   SttProvider sttProvider = SttProvider.soniox;
   String transcriptLanguage =
       'zh'; // formatting hint; zh may fall back if unsupported
+  bool communicationModeEnabled = false;
+  String ownerLanguage = 'zh';
+  String guestLanguage = 'en';
+  List<SttTranslationTurn> ownerTranslationTurns = const [];
+  List<SttTranslationTurn> guestTranslationTurns = const [];
   String transcript = '';
   String? transcriptPartial;
   bool transcribing = false;

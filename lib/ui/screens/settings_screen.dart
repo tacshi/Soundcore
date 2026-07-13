@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../ai/stt_types.dart';
+import '../../ai/soniox_languages.dart';
 import '../../state/recorder_controller.dart';
 import '../../theme/app_theme.dart';
 import '../widgets/widgets.dart';
@@ -109,6 +110,23 @@ class SettingsScreen extends StatelessWidget {
                       ],
                     ],
                   ),
+                  const Divider(height: 28),
+                  _SettingsSwitch(
+                    title: '交流模式',
+                    subtitle: c.sttProvider != SttProvider.soniox
+                        ? '仅 Soniox 支持双向实时翻译'
+                        : !c.autoTranscribe
+                        ? '请先开启自动转写'
+                        : '面对面显示双方语言的实时翻译',
+                    value: c.communicationModeEnabled,
+                    onChanged: c.communicationModeAvailable
+                        ? c.setCommunicationMode
+                        : null,
+                  ),
+                  if (c.communicationModeEnabled) ...[
+                    const SizedBox(height: 14),
+                    _CommunicationLanguageSettings(controller: c),
+                  ],
                 ],
               ),
             ),
@@ -130,7 +148,7 @@ class _SettingsSwitch extends StatelessWidget {
   final String title;
   final String subtitle;
   final bool value;
-  final ValueChanged<bool> onChanged;
+  final ValueChanged<bool>? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -167,6 +185,200 @@ class _SettingsSwitch extends StatelessWidget {
           onChanged: onChanged,
         ),
       ],
+    );
+  }
+}
+
+class _CommunicationLanguageSettings extends StatelessWidget {
+  const _CommunicationLanguageSettings({required this.controller});
+
+  final RecorderController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = controller;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.violet.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.violet.withValues(alpha: 0.24)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _LanguageField(
+            label: '我的语言',
+            code: c.ownerLanguage,
+            excludedCode: c.guestLanguage,
+            onSelected: c.setOwnerLanguage,
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Center(
+              child: IconButton(
+                key: const ValueKey('swap-communication-languages'),
+                tooltip: '交换语言',
+                visualDensity: VisualDensity.compact,
+                onPressed: c.swapCommunicationLanguages,
+                icon: const Icon(
+                  Icons.swap_vert_rounded,
+                  color: AppColors.violet,
+                ),
+              ),
+            ),
+          ),
+          _LanguageField(
+            label: '对方语言',
+            code: c.guestLanguage,
+            excludedCode: c.ownerLanguage,
+            onSelected: c.setGuestLanguage,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LanguageField extends StatelessWidget {
+  const _LanguageField({
+    required this.label,
+    required this.code,
+    required this.excludedCode,
+    required this.onSelected,
+  });
+
+  final String label;
+  final String code;
+  final String excludedCode;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final language = sonioxLanguageFor(code);
+    return OutlinedButton(
+      key: ValueKey('communication-language-$label'),
+      style: OutlinedButton.styleFrom(
+        foregroundColor: AppColors.textPrimary,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+        side: const BorderSide(color: AppColors.border),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+      onPressed: () async {
+        final selected = await showModalBottomSheet<String>(
+          context: context,
+          useSafeArea: true,
+          isScrollControlled: true,
+          backgroundColor: AppColors.bgCard,
+          builder: (_) => _LanguagePickerSheet(
+            title: label,
+            selectedCode: code,
+            excludedCode: excludedCode,
+          ),
+        );
+        if (selected != null) onSelected(selected);
+      },
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 11,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  language.label,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          ),
+          const Icon(Icons.search_rounded, size: 20),
+        ],
+      ),
+    );
+  }
+}
+
+class _LanguagePickerSheet extends StatefulWidget {
+  const _LanguagePickerSheet({
+    required this.title,
+    required this.selectedCode,
+    required this.excludedCode,
+  });
+
+  final String title;
+  final String selectedCode;
+  final String excludedCode;
+
+  @override
+  State<_LanguagePickerSheet> createState() => _LanguagePickerSheetState();
+}
+
+class _LanguagePickerSheetState extends State<_LanguagePickerSheet> {
+  String _query = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _query.trim().toLowerCase();
+    final languages = sonioxLanguages.where((language) {
+      if (language.code == widget.excludedCode) return false;
+      if (query.isEmpty) return true;
+      return language.code.contains(query) ||
+          language.name.toLowerCase().contains(query);
+    }).toList();
+
+    return SizedBox(
+      height: MediaQuery.sizeOf(context).height * 0.82,
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  '选择${widget.title}',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SearchBar(
+                  hintText: '搜索语言或代码',
+                  leading: const Icon(Icons.search_rounded),
+                  onChanged: (value) => setState(() => _query = value),
+                ),
+              ],
+            ),
+          ),
+          const Divider(),
+          Expanded(
+            child: ListView.builder(
+              itemCount: languages.length,
+              itemBuilder: (context, index) {
+                final language = languages[index];
+                final selected = language.code == widget.selectedCode;
+                return ListTile(
+                  title: Text(language.name),
+                  subtitle: Text(language.code),
+                  trailing: selected
+                      ? const Icon(Icons.check_rounded, color: AppColors.accent)
+                      : null,
+                  onTap: () => Navigator.of(context).pop(language.code),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

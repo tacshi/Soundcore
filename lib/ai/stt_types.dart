@@ -97,6 +97,88 @@ String renderSonioxTokens(Iterable<dynamic> tokens) {
   return normalizeSttText(buffer.toString());
 }
 
+/// One cumulative translated turn in a Soniox real-time result snapshot.
+class SttTranslationTurn {
+  const SttTranslationTurn({
+    required this.targetLanguage,
+    required this.sourceLanguage,
+    required this.text,
+    required this.isFinal,
+  });
+
+  final String targetLanguage;
+  final String sourceLanguage;
+  final String text;
+  final bool isFinal;
+}
+
+/// Group contiguous Soniox translation tokens into directional turns.
+///
+/// Original tokens separate translated runs. This is intentional: Soniox
+/// translations follow their source chunk but are not aligned token-for-token.
+List<SttTranslationTurn> renderSonioxTranslationTurns(
+  Iterable<dynamic> tokens,
+) {
+  final turns = <_MutableTranslationTurn>[];
+  _MutableTranslationTurn? current;
+
+  for (final token in tokens) {
+    if (token is! Map || token['translation_status'] != 'translation') {
+      current = null;
+      continue;
+    }
+
+    final text = '${token['text'] ?? ''}';
+    final targetLanguage = '${token['language'] ?? ''}'.trim().toLowerCase();
+    final sourceLanguage = '${token['source_language'] ?? ''}'
+        .trim()
+        .toLowerCase();
+    if (text.isEmpty || targetLanguage.isEmpty || sourceLanguage.isEmpty) {
+      current = null;
+      continue;
+    }
+    if (RegExp(r'^<end>$', caseSensitive: false).hasMatch(text.trim())) {
+      current = null;
+      continue;
+    }
+
+    if (current == null ||
+        current.targetLanguage != targetLanguage ||
+        current.sourceLanguage != sourceLanguage) {
+      current = _MutableTranslationTurn(
+        targetLanguage: targetLanguage,
+        sourceLanguage: sourceLanguage,
+      );
+      turns.add(current);
+    }
+    current.text.write(text);
+    current.isFinal = current.isFinal && token['is_final'] == true;
+  }
+
+  return [
+    for (final turn in turns)
+      if (normalizeSttText(turn.text.toString()).isNotEmpty)
+        SttTranslationTurn(
+          targetLanguage: turn.targetLanguage,
+          sourceLanguage: turn.sourceLanguage,
+          text: normalizeSttText(turn.text.toString()),
+          isFinal: turn.isFinal,
+        ),
+  ];
+}
+
+class _MutableTranslationTurn {
+  _MutableTranslationTurn({
+    required this.targetLanguage,
+    required this.sourceLanguage,
+  });
+
+  final String targetLanguage;
+  final String sourceLanguage;
+  final StringBuffer text = StringBuffer();
+  bool isFinal = true;
+}
+
 /// Batch / file transcription result.
 class SttResult {
   const SttResult({
@@ -123,6 +205,7 @@ class SttStreamEvent {
     this.speechFinal = false,
     this.durationSec,
     this.error,
+    this.translationTurns = const [],
   });
 
   /// `created` | `partial` | `done` | `error` | `closed`
@@ -132,6 +215,7 @@ class SttStreamEvent {
   final bool speechFinal;
   final double? durationSec;
   final String? error;
+  final List<SttTranslationTurn> translationTurns;
 }
 
 /// Common interface for PCM16 LE streaming STT (xAI WS / Soniox WS).

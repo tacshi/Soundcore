@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../state/recorder_controller.dart';
 import '../theme/app_theme.dart';
 import 'screens/device_screen.dart';
+import 'screens/communication_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/settings_screen.dart';
 
@@ -20,6 +21,10 @@ class _AppShellState extends State<AppShell> {
   @override
   Widget build(BuildContext context) {
     final c = context.watch<RecorderController>();
+
+    if (c.isCommunicationLiveSession) {
+      return const CommunicationScreen();
+    }
 
     final pages = [
       const HomeScreen(),

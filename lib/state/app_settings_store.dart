@@ -58,6 +58,9 @@ class AppSettings {
     this.autoTranscribe = true,
     this.autoRealtime = true,
     this.transcriptLanguage = 'zh',
+    this.communicationModeEnabled = false,
+    this.ownerLanguage = 'zh',
+    this.guestLanguage = 'en',
   });
 
   final String? xaiApiKey;
@@ -66,6 +69,9 @@ class AppSettings {
   final bool autoTranscribe;
   final bool autoRealtime;
   final String transcriptLanguage;
+  final bool communicationModeEnabled;
+  final String ownerLanguage;
+  final String guestLanguage;
 
   AppSettings copyWith({
     String? xaiApiKey,
@@ -74,6 +80,9 @@ class AppSettings {
     bool? autoTranscribe,
     bool? autoRealtime,
     String? transcriptLanguage,
+    bool? communicationModeEnabled,
+    String? ownerLanguage,
+    String? guestLanguage,
     bool clearXai = false,
     bool clearSoniox = false,
   }) {
@@ -84,6 +93,10 @@ class AppSettings {
       autoTranscribe: autoTranscribe ?? this.autoTranscribe,
       autoRealtime: autoRealtime ?? this.autoRealtime,
       transcriptLanguage: transcriptLanguage ?? this.transcriptLanguage,
+      communicationModeEnabled:
+          communicationModeEnabled ?? this.communicationModeEnabled,
+      ownerLanguage: ownerLanguage ?? this.ownerLanguage,
+      guestLanguage: guestLanguage ?? this.guestLanguage,
     );
   }
 
@@ -95,6 +108,9 @@ class AppSettings {
     'autoTranscribe': autoTranscribe,
     'autoRealtime': autoRealtime,
     'transcriptLanguage': transcriptLanguage,
+    'communicationModeEnabled': communicationModeEnabled,
+    'ownerLanguage': ownerLanguage,
+    'guestLanguage': guestLanguage,
   };
 
   factory AppSettings.fromJson(Map<String, dynamic> map) {
@@ -103,6 +119,12 @@ class AppSettings {
       (e) => e.name == providerName,
       orElse: () => SttProvider.soniox,
     );
+    var ownerLanguage = (_str(map['ownerLanguage']) ?? 'zh').toLowerCase();
+    var guestLanguage = (_str(map['guestLanguage']) ?? 'en').toLowerCase();
+    if (ownerLanguage == guestLanguage) {
+      ownerLanguage = 'zh';
+      guestLanguage = 'en';
+    }
     return AppSettings(
       xaiApiKey: _str(map['xaiApiKey']),
       sonioxApiKey: _str(map['sonioxApiKey']),
@@ -110,6 +132,9 @@ class AppSettings {
       autoTranscribe: map['autoTranscribe'] != false,
       autoRealtime: map['autoRealtime'] != false,
       transcriptLanguage: _str(map['transcriptLanguage']) ?? 'zh',
+      communicationModeEnabled: map['communicationModeEnabled'] == true,
+      ownerLanguage: ownerLanguage,
+      guestLanguage: guestLanguage,
     );
   }
 

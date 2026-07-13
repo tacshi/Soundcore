@@ -22,6 +22,8 @@ class SonioxSttStreamSession implements SttStreamSession {
     this.languageHints = const ['zh', 'en'],
     this.model = 'stt-rt-v5',
     this.terms = const ['soundcore Work', 'Anker', '录音豆', 'D3200'],
+    this.translationLanguageA,
+    this.translationLanguageB,
   });
 
   final String apiKey;
@@ -30,6 +32,8 @@ class SonioxSttStreamSession implements SttStreamSession {
   final List<String> languageHints;
   final String model;
   final List<String> terms;
+  final String? translationLanguageA;
+  final String? translationLanguageB;
 
   static final _uri = Uri.parse('wss://stt-rt.soniox.com/transcribe-websocket');
 
@@ -54,10 +58,21 @@ class SonioxSttStreamSession implements SttStreamSession {
   bool get isServerReady => _serverReady;
 
   Map<String, dynamic> get _config {
-    final hints = <String>{
-      ...languageHints,
-      if (language != null && language!.isNotEmpty) language!,
-    }.toList();
+    final languageA = translationLanguageA?.trim().toLowerCase();
+    final languageB = translationLanguageB?.trim().toLowerCase();
+    final translationEnabled =
+        languageA != null &&
+        languageA.isNotEmpty &&
+        languageB != null &&
+        languageB.isNotEmpty &&
+        languageA != languageB;
+    final hints = translationEnabled
+        ? [languageA, languageB]
+        : <String>{
+            ...languageHints.map((hint) => hint.trim().toLowerCase()),
+            if (language != null && language!.isNotEmpty)
+              language!.trim().toLowerCase(),
+          }.where((hint) => hint.isNotEmpty).toList();
     return {
       'api_key': apiKey,
       'model': model,
@@ -69,6 +84,12 @@ class SonioxSttStreamSession implements SttStreamSession {
       'enable_speaker_diarization': true,
       'enable_endpoint_detection': true,
       'max_endpoint_delay_ms': 1000,
+      if (translationEnabled)
+        'translation': {
+          'type': 'two_way',
+          'language_a': languageA,
+          'language_b': languageB,
+        },
       'context': {
         'terms': terms,
         'general': [
@@ -78,6 +99,9 @@ class SonioxSttStreamSession implements SttStreamSession {
       },
     };
   }
+
+  @visibleForTesting
+  Map<String, dynamic> get configForTesting => _config;
 
   @override
   Future<void> start({Duration timeout = const Duration(seconds: 15)}) async {
@@ -176,6 +200,11 @@ class SonioxSttStreamSession implements SttStreamSession {
 
     final full = _renderTokens(_finalTokens, nonFinal);
     final finalOnly = _renderTokens(_finalTokens, const []);
+    final translationTurns = renderSonioxTranslationTurns([
+      ..._finalTokens,
+      ...nonFinal,
+    ]);
+    final finalTranslationTurns = renderSonioxTranslationTurns(_finalTokens);
     final hasNonFinal = nonFinal.isNotEmpty;
     final finished = json['finished'] == true;
     final audioMs = (json['total_audio_proc_ms'] as num?)?.toDouble();
@@ -188,6 +217,7 @@ class SonioxSttStreamSession implements SttStreamSession {
         isFinal: true,
         speechFinal: true,
         durationSec: durationSec,
+        translationTurns: finalTranslationTurns,
       );
       _emit(ev);
       final d = _doneWait;
@@ -195,7 +225,9 @@ class SonioxSttStreamSession implements SttStreamSession {
       return;
     }
 
-    if (full.isNotEmpty || finalOnly.isNotEmpty) {
+    if (full.isNotEmpty ||
+        finalOnly.isNotEmpty ||
+        translationTurns.isNotEmpty) {
       _emit(
         SttStreamEvent(
           type: 'partial',
@@ -204,6 +236,7 @@ class SonioxSttStreamSession implements SttStreamSession {
           // Endpoint detection finalizes tokens; treat all-final updates as chunk finals.
           speechFinal: false,
           durationSec: durationSec,
+          translationTurns: translationTurns,
         ),
       );
     }
@@ -281,12 +314,14 @@ class SonioxSttStreamSession implements SttStreamSession {
       debugPrint('[SonioxStream] done timeout');
       // Return accumulated finals if any.
       final text = _renderTokens(_finalTokens, const []);
-      if (text.isNotEmpty) {
+      final translationTurns = renderSonioxTranslationTurns(_finalTokens);
+      if (text.isNotEmpty || translationTurns.isNotEmpty) {
         return SttStreamEvent(
           type: 'done',
           text: text,
           isFinal: true,
           speechFinal: true,
+          translationTurns: translationTurns,
         );
       }
       return null;
