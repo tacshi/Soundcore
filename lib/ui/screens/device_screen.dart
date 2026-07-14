@@ -364,7 +364,6 @@ class _OfflineDeviceView extends StatelessWidget {
     final d = c.displayDevice;
 
     return GradientScaffold(
-      appBar: AppBar(title: Text(c.displayDeviceName)),
       child: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 100),
@@ -375,43 +374,22 @@ class _OfflineDeviceView extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Center(
-                      child: Image.asset(
-                        'assets/product/d3200_device_connected_white.webp',
-                        height: 120,
-                        fit: BoxFit.contain,
-                        errorBuilder: (_, _, _) => const Icon(
-                          Icons.headphones_rounded,
-                          size: 64,
-                          color: AppColors.textMuted,
+                    const Center(child: _OfflineProductImage()),
+                    const SizedBox(height: 10),
+                    Text(
+                      d.displayName,
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.headlineMedium,
+                    ),
+                    if (c.bound || d.isBoundAdvertised) ...[
+                      const SizedBox(height: 10),
+                      Center(
+                        child: StatusPill(
+                          label: c.bound ? '已绑定' : '广告已绑定',
+                          color: AppColors.accent,
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    Wrap(
-                      alignment: WrapAlignment.center,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      spacing: 8,
-                      runSpacing: 6,
-                      children: [
-                        Text(
-                          d.displayName,
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.headlineMedium,
-                        ),
-                        const StatusPill(label: '离线', color: AppColors.coral),
-                        if (c.bound)
-                          const StatusPill(
-                            label: '已绑定',
-                            color: AppColors.accent,
-                          )
-                        else if (d.isBoundAdvertised)
-                          const StatusPill(
-                            label: '广告已绑定',
-                            color: AppColors.accent,
-                          ),
-                      ],
-                    ),
+                    ],
                     if (d.macAddress != null && d.macAddress!.isNotEmpty) ...[
                       const SizedBox(height: 10),
                       Text(
@@ -479,6 +457,92 @@ class _OfflineDeviceView extends StatelessWidget {
                 ),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OfflineProductImage extends StatelessWidget {
+  const _OfflineProductImage();
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      image: true,
+      label: '设备离线，蓝牙连接已断开',
+      child: SizedBox(
+        width: 220,
+        height: 142,
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Opacity(
+              opacity: 0.62,
+              child: ColorFiltered(
+                colorFilter: const ColorFilter.matrix([
+                  0.2126,
+                  0.7152,
+                  0.0722,
+                  0,
+                  0,
+                  0.2126,
+                  0.7152,
+                  0.0722,
+                  0,
+                  0,
+                  0.2126,
+                  0.7152,
+                  0.0722,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                ]),
+                child: Image.asset(
+                  'assets/product/d3200_device_connected_white.webp',
+                  height: 132,
+                  fit: BoxFit.contain,
+                  excludeFromSemantics: true,
+                  errorBuilder: (_, _, _) => const Icon(
+                    Icons.headphones_rounded,
+                    size: 64,
+                    color: AppColors.textMuted,
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 7,
+              right: 27,
+              child: Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: AppColors.coral.withValues(alpha: 0.08),
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: AppColors.coral.withValues(alpha: 0.24),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.coral.withValues(alpha: 0.12),
+                      blurRadius: 14,
+                      offset: const Offset(0, 5),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.bluetooth_disabled_rounded,
+                  size: 24,
+                  color: AppColors.coral,
+                ),
+              ),
+            ),
           ],
         ),
       ),
