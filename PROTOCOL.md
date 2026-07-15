@@ -260,17 +260,58 @@ Type `0x1B` / id `0x0E`: offline file list **with end time** per entry.
 
 Source: `BindingEventSendManager`, RX: `BindingMessageDispatch`
 
-| cmdId | Name | Payload |
-|-------|------|---------|
-| `0x87` | bind | `01` |
-| `0x87` | unbind | `00` |
+| cmdId | Name | Payload (Feishu / Anker SDK) |
+|-------|------|------------------------------|
+| `0x87` | bind | `01` only |
+| `0x87` | unbind | `00` only |
+
+SDK code is fixed one-byte payloads:
+
+```java
+// BindingEventSendManager
+bindingDevice()   → payload { 1 }
+unBindingDevice() → payload { 0 }
+```
+
+Public API is only `bindingDevice(mac, uuid, boolean binding)` — **no** clear-files
+or broadcast-tone arguments. Feishu wrapper (`SoundCoreAudioDevice.bindDevice` /
+`unBindDevice`) just calls that boolean.
 
 **RX:**
 
 | cmdId | Meaning |
 |-------|---------|
 | `0x87` | binding result (`successFlag` low nibble) |
-| `0x88` | device confirm bind |
+| `0x88` | device confirm bind (bind path; not used for unbind) |
+
+**Observed behavior (stock 1-byte):**
+
+- Unbind ACK → SDK disconnects BLE; offline files are **not** wiped by the command
+  itself (app comment / Feishu path). Factory wipe is separate: type `0x01` id `0xB8`.
+- Bind ACK → optional device-side 0x88 confirm; user press on device may be required.
+- Advertisement bind bit (`flags & 0x80`) reflects bound state for scan filtering.
+
+**Experimental multi-byte probe (not in Feishu SDK):**
+
+Firmware may accept a longer payload; untested in production SDK:
+
+| Op | Payload | Hypothesis |
+|----|---------|------------|
+| bind | `01 01` | 2nd byte = play tone / 播报 after bind |
+| bind | `01 00` or `01` | silent bind (stock) |
+| unbind | `00 01` | 2nd byte = clear offline recordings on unbind |
+| unbind | `00 00` or `00` | keep files (stock) |
+
+How to verify on device:
+
+1. Note `freeMemoryKB` + file list before action.
+2. Send extended payload via app toggles (设备 → 配对绑定).
+3. After ACK: list files again / listen for tone / re-scan adv bind bit.
+4. If freeMemory + file count unchanged, firmware likely ignores byte 2.
+
+Related but **not** bind flags: `resetDevice` (`0x01/0xB8`) clears device state;
+per-file delete is `0x1A/0x10`. DeviceInfo also exposes read-only
+`autoPowerOff*` / `pickupIndicatorLightStatus` with **no** TX setters in this SDK.
 
 ### 5.5 More settings — `cmdType = 0x10`
 

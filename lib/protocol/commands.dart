@@ -105,11 +105,42 @@ class DeviceCommands {
       ProtocolFrame.encode(cmdType: 0x2E, cmdId: 0x01, payload: publicKeyBytes);
 
   // ── Binding (type 0x0B) ──────────────────────────────────────────────
-  static Uint8List bind() =>
-      ProtocolFrame.encode(cmdType: 0x0B, cmdId: 0x87, payload: const [0x01]);
+  /// Feishu/Anker SDK only ever sends a **1-byte** payload:
+  ///   bind = `01`, unbind = `00`.
+  ///
+  /// Optional second byte is **experimental firmware probing** (not used by
+  /// Feishu). Hypothesized layout:
+  /// - bind:   `[0x01, broadcastTone?]`  — `1` may enable post-bind 播报/提示音
+  /// - unbind: `[0x00, clearRecordings?]` — `1` may wipe offline files on unbind
+  ///
+  /// If the device ignores the extra byte, ACK still succeeds and behavior
+  /// matches stock Feishu. Verify by comparing freeMemory / file list / audio.
+  static Uint8List bind({bool broadcastTone = false}) {
+    final payload = <int>[0x01];
+    if (broadcastTone) payload.add(0x01);
+    return ProtocolFrame.encode(
+      cmdType: 0x0B,
+      cmdId: 0x87,
+      payload: payload,
+    );
+  }
 
-  static Uint8List unbind() =>
-      ProtocolFrame.encode(cmdType: 0x0B, cmdId: 0x87, payload: const [0x00]);
+  static Uint8List unbind({bool clearRecordings = false}) {
+    final payload = <int>[0x00];
+    if (clearRecordings) payload.add(0x01);
+    return ProtocolFrame.encode(
+      cmdType: 0x0B,
+      cmdId: 0x87,
+      payload: payload,
+    );
+  }
+
+  /// Raw multi-byte bind/unbind for ad-hoc probes (any payload after op).
+  static Uint8List bindRaw(List<int> payload) => ProtocolFrame.encode(
+        cmdType: 0x0B,
+        cmdId: 0x87,
+        payload: payload,
+      );
 
   // ── More settings (type 0x10) ────────────────────────────────────────
   static Uint8List setFindMy(bool enable) => ProtocolFrame.encode(

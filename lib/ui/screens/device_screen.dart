@@ -179,7 +179,50 @@ class DeviceScreen extends StatelessWidget {
                       fontSize: 12,
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    title: const Text(
+                      '绑定后播报（实验）',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: Text(
+                      c.bindBroadcastTone
+                          ? 'TX 0x0B/0x87 payload = 01 01'
+                          : 'TX 0x0B/0x87 payload = 01（飞书默认）',
+                      style: const TextStyle(
+                        color: AppColors.textMuted,
+                        fontSize: 11,
+                      ),
+                    ),
+                    value: c.bindBroadcastTone,
+                    onChanged: c.phase == AppPhase.busy
+                        ? null
+                        : c.setBindBroadcastTone,
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    dense: true,
+                    title: const Text(
+                      '解绑时清除录音（实验）',
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: Text(
+                      c.unbindClearRecordings
+                          ? 'TX 0x0B/0x87 payload = 00 01'
+                          : 'TX 0x0B/0x87 payload = 00（飞书默认，不清文件）',
+                      style: const TextStyle(
+                        color: AppColors.textMuted,
+                        fontSize: 11,
+                      ),
+                    ),
+                    value: c.unbindClearRecordings,
+                    onChanged: c.phase == AppPhase.busy
+                        ? null
+                        : c.setUnbindClearRecordings,
+                  ),
+                  const SizedBox(height: 4),
                   Row(
                     children: [
                       Expanded(
@@ -188,7 +231,7 @@ class DeviceScreen extends StatelessWidget {
                           icon: Icons.link_rounded,
                           onPressed: c.bound || c.phase == AppPhase.busy
                               ? null
-                              : c.bindDevice,
+                              : () => c.bindDevice(),
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -201,17 +244,23 @@ class DeviceScreen extends StatelessWidget {
                           onPressed: !c.bound || c.phase == AppPhase.busy
                               ? null
                               : () async {
+                                  final clear = c.unbindClearRecordings;
                                   final ok = await showDialog<bool>(
                                     context: context,
                                     builder: (ctx) => AlertDialog(
                                       backgroundColor: AppColors.bgCard,
                                       title: const Text('确认解绑？'),
-                                      content: const Text(
-                                        '将向设备发送解绑指令（与飞书相同）。\n'
-                                        '• 不会清空录音或恢复出厂\n'
-                                        '• 成功后会断开连接\n'
-                                        '• 之后可再扫描、连接并重新绑定',
-                                        style: TextStyle(
+                                      content: Text(
+                                        clear
+                                            ? '将发送解绑 + 清录音实验标志（payload 00 01）。\n'
+                                                '• 固件若支持，可能清空机内离线录音\n'
+                                                '• 成功后通常会断开连接\n'
+                                                '• 建议先 list 文件 / 记 freeMemory 再对比'
+                                            : '将向设备发送解绑指令（与飞书相同，payload 00）。\n'
+                                                '• 默认不会清空录音或恢复出厂\n'
+                                                '• 成功后会断开连接\n'
+                                                '• 之后可再扫描、连接并重新绑定',
+                                        style: const TextStyle(
                                           color: AppColors.textSecondary,
                                           height: 1.4,
                                         ),
@@ -225,7 +274,7 @@ class DeviceScreen extends StatelessWidget {
                                         TextButton(
                                           onPressed: () =>
                                               Navigator.pop(ctx, true),
-                                          child: const Text('解绑'),
+                                          child: Text(clear ? '解绑并尝试清录音' : '解绑'),
                                         ),
                                       ],
                                     ),

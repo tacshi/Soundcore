@@ -675,47 +675,68 @@ class _LocalExportCard extends StatelessWidget {
     }
   }
 
-  Future<void> _exportTranscript(
+  Future<void> _saveRecording(
     BuildContext context,
-    String name,
-    String text,
+    RecorderController controller,
   ) async {
-    final stem = name.replaceFirst(RegExp(r'\.(?:wav|opus(?:\.bin)?)$'), '');
     try {
-      final destination = await getSaveLocation(
-        suggestedName: '$stem.txt',
-        confirmButtonText: '导出',
+      // iOS does not expose a directory/save-location picker through
+      // file_selector. Its share sheet provides the native "Save to Files"
+      // action and supports the optional transcript sidecar as a second file.
+      if (Platform.isIOS) {
+        await _shareRecording(
+          context,
+          controller,
+          title: '保存录音',
+          failureLabel: '保存',
+        );
+        return;
+      }
+
+      final destination = await getDirectoryPath(
+        confirmButtonText: '保存',
         canCreateDirectories: true,
       );
       if (destination == null) return;
-      await File(destination.path).writeAsString(text, flush: true);
+      final result = await controller.saveLocalCopies([path], destination);
       if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('转写文本已导出')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            result.failed.isEmpty
+                ? '已保存录音${result.transcripts > 0 ? '和转写文本' : ''}'
+                : '保存失败：${result.failed.join('\n')}',
+          ),
+        ),
+      );
     } catch (error) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('导出失败：$error')));
+      ).showSnackBar(SnackBar(content: Text('保存失败：$error')));
     }
   }
 
-  Future<void> _shareTranscript(
+  Future<void> _shareRecording(
     BuildContext context,
-    String name,
-    String text,
-  ) async {
+    RecorderController controller, {
+    String title = '分享录音',
+    String failureLabel = '分享',
+  }) async {
+    final name = path.split('/').last;
     try {
+      final paths = await controller.prepareLocalSharePaths([path]);
+      if (paths.isEmpty) throw StateError('录音文件不存在');
+      if (!context.mounted) return;
       final box = context.findRenderObject() as RenderBox?;
       final origin = box == null
           ? null
           : box.localToGlobal(Offset.zero) & box.size;
       await SharePlus.instance.share(
         ShareParams(
-          text: text,
-          title: '分享转写文本',
-          subject: '$name 转写文本',
+          files: paths.map(XFile.new).toList(),
+          title: title,
+          subject: paths.length > 1 ? '$name 录音及转写' : '$name 录音',
           sharePositionOrigin: origin,
         ),
       );
@@ -723,7 +744,7 @@ class _LocalExportCard extends StatelessWidget {
       if (!context.mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('分享失败：$error')));
+      ).showSnackBar(SnackBar(content: Text('$failureLabel失败：$error')));
     }
   }
 
@@ -828,6 +849,18 @@ class _LocalExportCard extends StatelessWidget {
               ),
               if (!selecting) ...[
                 IconButton(
+                  tooltip: hasText ? '保存录音和转写' : '保存录音',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _saveRecording(context, c),
+                  icon: const Icon(Icons.file_download_outlined, size: 19),
+                ),
+                IconButton(
+                  tooltip: hasText ? '分享录音和转写' : '分享录音',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => _shareRecording(context, c),
+                  icon: const Icon(Icons.ios_share_rounded, size: 19),
+                ),
+                IconButton(
                   tooltip: '重命名',
                   visualDensity: VisualDensity.compact,
                   onPressed: () => _rename(context, c),
@@ -864,31 +897,17 @@ class _LocalExportCard extends StatelessWidget {
             ],
             if (hasText) ...[
               SizedBox(height: transcriptionProgress == null ? 10 : 6),
-              Row(
-                children: [
-                  if (c.sttConfigured)
-                    TextButton.icon(
-                      onPressed: c.transcribing
-                          ? null
-                          : () => _confirmRetranscribe(context, c),
-                      icon: const Icon(Icons.refresh_rounded, size: 18),
-                      label: const Text('重新转写', style: TextStyle(fontSize: 12)),
-                    ),
-                  const Spacer(),
-                  IconButton(
-                    tooltip: '导出转写文本',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => _exportTranscript(context, name, text),
-                    icon: const Icon(Icons.file_download_outlined, size: 19),
+              if (c.sttConfigured)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: c.transcribing
+                        ? null
+                        : () => _confirmRetranscribe(context, c),
+                    icon: const Icon(Icons.refresh_rounded, size: 18),
+                    label: const Text('重新转写', style: TextStyle(fontSize: 12)),
                   ),
-                  IconButton(
-                    tooltip: '分享转写文本',
-                    visualDensity: VisualDensity.compact,
-                    onPressed: () => _shareTranscript(context, name, text),
-                    icon: const Icon(Icons.ios_share_rounded, size: 19),
-                  ),
-                ],
-              ),
+                ),
               const SizedBox(height: 6),
               Container(
                 width: double.infinity,

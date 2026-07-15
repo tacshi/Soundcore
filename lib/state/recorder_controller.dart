@@ -2269,18 +2269,47 @@ class RecorderController extends ChangeNotifier {
     });
   }
 
-  Future<void> bindDevice() async {
-    _pendingBindRequest = true;
-    await _send(DeviceCommands.bind(), label: '正在绑定…');
+  /// When true, bind TX includes experimental 2nd byte `01` (post-bind 播报?).
+  /// Feishu never sets this; firmware may ignore it.
+  bool bindBroadcastTone = false;
+
+  /// When true, unbind TX includes experimental 2nd byte `01` (clear files?).
+  /// Stock Feishu unbind is 1-byte `00` and does **not** wipe recordings.
+  bool unbindClearRecordings = false;
+
+  void setBindBroadcastTone(bool value) {
+    if (bindBroadcastTone == value) return;
+    bindBroadcastTone = value;
+    notifyListeners();
   }
 
-  /// Unbind is the inverse of bind (same cmd 0x0B/0x87, payload 0x00).
-  /// Safe: does not factory-reset or wipe recordings. Feishu disconnects BLE
-  /// after a successful unbind ACK; you can scan + connect + bind again.
-  Future<void> unbindDevice() async {
+  void setUnbindClearRecordings(bool value) {
+    if (unbindClearRecordings == value) return;
+    unbindClearRecordings = value;
+    notifyListeners();
+  }
+
+  Future<void> bindDevice({bool? broadcastTone}) async {
+    final tone = broadcastTone ?? bindBroadcastTone;
+    _pendingBindRequest = true;
+    await _send(
+      DeviceCommands.bind(broadcastTone: tone),
+      label: tone ? '正在绑定（含播报标志）…' : '正在绑定…',
+    );
+  }
+
+  /// Unbind is the inverse of bind (same cmd 0x0B/0x87, payload 0x00 by default).
+  /// Stock Feishu: does not factory-reset or wipe recordings; disconnects BLE
+  /// after a successful unbind ACK. Optional [clearRecordings] appends a 2nd
+  /// payload byte for experimental firmware probing.
+  Future<void> unbindDevice({bool? clearRecordings}) async {
+    final clear = clearRecordings ?? unbindClearRecordings;
     _postBindFileRefreshTimer?.cancel();
     _pendingBindRequest = false;
-    await _send(DeviceCommands.unbind(), label: '正在解绑…');
+    await _send(
+      DeviceCommands.unbind(clearRecordings: clear),
+      label: clear ? '正在解绑（含清录音标志）…' : '正在解绑…',
+    );
   }
 
   Future<void> resetDevice() =>
