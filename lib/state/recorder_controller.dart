@@ -22,6 +22,7 @@ import '../ble/ble_service.dart';
 import '../ble/ble_file_pull.dart';
 import '../ble/realtime_stream.dart';
 import '../crypto/device_crypto.dart';
+import '../platform/background_sync_service.dart';
 import '../protocol/commands.dart';
 import '../protocol/frame.dart';
 import '../protocol/models.dart';
@@ -1310,8 +1311,14 @@ class RecorderController extends ChangeNotifier {
     statusMessage = '正在连接 ${d.displayName}…';
     connected = false;
     notifyListeners();
+    // Start while the activity is visible. Android 12+ restricts launching a
+    // foreground service after the app has already entered the background.
+    await BackgroundSyncService.start();
     try {
       await _ble.connect(d.id, serviceUuidHint: d.serviceUuid);
+      // Retry after GATT is ready in case Android initially rejected the
+      // connected-device service before Bluetooth permission settled.
+      await BackgroundSyncService.start();
       connected = true;
       phase = AppPhase.ready;
       statusMessage = '已连接';
@@ -1350,6 +1357,9 @@ class RecorderController extends ChangeNotifier {
       // Keep lastKnownDevice if we had one from a prior session.
       activeDevice = lastKnownDevice;
       connected = false;
+      if (!_ble.isConnected) {
+        await BackgroundSyncService.stop();
+      }
       notifyListeners();
     }
   }
@@ -1376,6 +1386,7 @@ class RecorderController extends ChangeNotifier {
     phase = AppPhase.idle;
     statusMessage = null;
     connected = false;
+    await BackgroundSyncService.stop();
     unawaited(_persistDevice());
     notifyListeners();
   }
