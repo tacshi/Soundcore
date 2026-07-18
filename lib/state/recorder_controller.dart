@@ -1274,6 +1274,20 @@ class RecorderController extends ChangeNotifier {
     statusMessage = '正在检查蓝牙…';
     notifyListeners();
     try {
+      final saved = bound ? lastKnownDevice : null;
+      if (saved != null && await _ble.isD3200ConnectedToSystem(saved.id)) {
+        statusMessage = '正在恢复 ${saved.displayName} 的连接…';
+        notifyListeners();
+        await connect(saved);
+        if (connected) return;
+
+        // The restored link went stale while being adopted. Fall back to a
+        // normal scan without leaving the failed direct-connect error visible.
+        errorMessage = null;
+        phase = AppPhase.scanning;
+        statusMessage = '正在检查蓝牙…';
+        notifyListeners();
+      }
       await _ble.startScan(timeout: const Duration(seconds: 30));
       statusMessage = '正在扫描 soundcore Work（D3200）…';
       notifyListeners();
@@ -2273,19 +2287,9 @@ class RecorderController extends ChangeNotifier {
   /// Feishu never sets this; firmware may ignore it.
   bool bindBroadcastTone = false;
 
-  /// When true, unbind TX includes experimental 2nd byte `01` (clear files?).
-  /// Stock Feishu unbind is 1-byte `00` and does **not** wipe recordings.
-  bool unbindClearRecordings = false;
-
   void setBindBroadcastTone(bool value) {
     if (bindBroadcastTone == value) return;
     bindBroadcastTone = value;
-    notifyListeners();
-  }
-
-  void setUnbindClearRecordings(bool value) {
-    if (unbindClearRecordings == value) return;
-    unbindClearRecordings = value;
     notifyListeners();
   }
 
@@ -2298,18 +2302,12 @@ class RecorderController extends ChangeNotifier {
     );
   }
 
-  /// Unbind is the inverse of bind (same cmd 0x0B/0x87, payload 0x00 by default).
-  /// Stock Feishu: does not factory-reset or wipe recordings; disconnects BLE
-  /// after a successful unbind ACK. Optional [clearRecordings] appends a 2nd
-  /// payload byte for experimental firmware probing.
-  Future<void> unbindDevice({bool? clearRecordings}) async {
-    final clear = clearRecordings ?? unbindClearRecordings;
+  /// Unbind with the stock Feishu payload. This preserves recordings and
+  /// disconnects BLE after a successful ACK.
+  Future<void> unbindDevice() async {
     _postBindFileRefreshTimer?.cancel();
     _pendingBindRequest = false;
-    await _send(
-      DeviceCommands.unbind(clearRecordings: clear),
-      label: clear ? '正在解绑（含清录音标志）…' : '正在解绑…',
-    );
+    await _send(DeviceCommands.unbind(), label: '正在解绑…');
   }
 
   Future<void> resetDevice() =>

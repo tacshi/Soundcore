@@ -40,6 +40,7 @@ class BleFilePull {
 
   Future<String> pullFile(
     OfflineFileEntry file, {
+    // Maximum time without a file packet, not a cap on total transfer time.
     Duration timeout = const Duration(seconds: 90),
     void Function(int received, int expected)? onProgress,
   }) async {
@@ -55,12 +56,14 @@ class BleFilePull {
     final fileIdStr = '${file.fileId}';
     final head = Completer<void>();
     final done = Completer<void>();
+    final inactivity = Stopwatch()..start();
     final sub = packets.listen((pkt) {
       if (pkt.cmdType != RxCmd.transportType &&
           pkt.cmdType != RxCmd.transportTypeAlt) {
         return;
       }
       if (pkt.cmdId == RxCmd.fileHeadId) {
+        inactivity.reset();
         final secret = AudioFileSecretKey.parseFrame(pkt.raw);
         if (secret != null) {
           if (secret.fileSize > 0) expected = secret.fileSize;
@@ -77,6 +80,7 @@ class BleFilePull {
       }
       if (pkt.cmdId == RxCmd.fileSliceId ||
           pkt.cmdId == RxCmd.fileSliceMarkId) {
+        inactivity.reset();
         received += _writeSlices(
           pkt.raw,
           sink,
@@ -87,6 +91,7 @@ class BleFilePull {
         return;
       }
       if (pkt.cmdId == RxCmd.fileDoneId) {
+        inactivity.reset();
         if (!done.isCompleted) done.complete();
       }
     });
@@ -111,8 +116,7 @@ class BleFilePull {
       }
       if (_cancelled) throw const BleFilePullCancelled();
 
-      final deadline = DateTime.now().add(timeout);
-      while (!_cancelled && DateTime.now().isBefore(deadline)) {
+      while (!_cancelled && inactivity.elapsed < timeout) {
         if (done.isCompleted) break;
         if (expected > 0 && received >= expected) break;
         await Future<void>.delayed(const Duration(milliseconds: 80));

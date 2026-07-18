@@ -315,6 +315,8 @@ void main() {
     // payload: bind=01, unbind=00
     expect(bind[9], 0x01);
     expect(unbind[9], 0x00);
+    expect(unbind, hasLength(11));
+    expect(unbind.sublist(9, unbind.length - 1), const [0x00]);
     expect(ProtocolFrame.verifyChecksum(bind), isTrue);
     expect(ProtocolFrame.verifyChecksum(unbind), isTrue);
   });

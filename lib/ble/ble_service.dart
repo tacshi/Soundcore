@@ -233,6 +233,42 @@ class BleService {
     await _stopScanAndWait();
   }
 
+  /// Whether iOS/macOS already has the persisted recorder connected.
+  ///
+  /// With CoreBluetooth state restoration enabled, a peripheral can be
+  /// restored before Dart creates this service. The recorder then stops
+  /// advertising, so a scan cannot rediscover it; the saved remote id must be
+  /// adopted directly instead.
+  Future<bool> isD3200ConnectedToSystem(String remoteId) async {
+    if (!Platform.isIOS && !Platform.isMacOS) return false;
+
+    try {
+      await ensureBluetoothReady();
+      final normalizedId = remoteId.toLowerCase();
+      final appConnected = FlutterBluePlus.connectedDevices.any(
+        (device) => device.remoteId.str.toLowerCase() == normalizedId,
+      );
+      if (appConnected) {
+        _log('Restored app connection for $remoteId');
+        return true;
+      }
+
+      final systemDevices = await FlutterBluePlus.systemDevices([
+        AnkerUuids.d3200Service,
+      ]);
+      final systemConnected = systemDevices.any(
+        (device) => device.remoteId.str.toLowerCase() == normalizedId,
+      );
+      if (systemConnected) {
+        _log('Found system-connected D3200 $remoteId');
+      }
+      return systemConnected;
+    } catch (error) {
+      _log('System-connected D3200 lookup failed: $error');
+      return false;
+    }
+  }
+
   /// Stop scan and wait until the central reports not scanning.
   /// Concurrent scan + connect is a common cause of flaky first GATT connect.
   Future<void> _stopScanAndWait() async {

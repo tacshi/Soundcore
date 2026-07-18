@@ -741,7 +741,7 @@ class _ApiKeyFieldState extends State<_ApiKeyField> {
           ],
           const SizedBox(height: 6),
           Text(
-            '环境变量：export ${widget.envName}=…（重启后仍可作为后备）',
+            '环境变量：export ${widget.envName}=…',
             style: const TextStyle(
               color: AppColors.textMuted,
               fontSize: 10,
