@@ -35,8 +35,13 @@ import 'transcript_store.dart';
 enum AppPhase { idle, scanning, connecting, ready, busy }
 
 class RecorderController extends ChangeNotifier {
-  RecorderController({BleService? ble, bool loadPersistedState = true})
-    : _ble = ble ?? BleService() {
+  RecorderController({
+    BleService? ble,
+    bool loadPersistedState = true,
+    PersistedDeviceLoader? persistedDeviceLoader,
+    this.recordingShortcutScanTimeout = const Duration(seconds: 30),
+  }) : _ble = ble ?? BleService(),
+       _persistedDeviceLoader = persistedDeviceLoader ?? DeviceStore.load {
     _subs.add(
       _ble.scanResults.listen((list) {
         devices = list;
@@ -158,9 +163,14 @@ class RecorderController extends ChangeNotifier {
     _wirePlayer();
     if (loadPersistedState) {
       unawaited(_loadPersistedSettings());
-      unawaited(_loadPersistedDevice());
       unawaited(_loadLocalExports());
       _transcriptsLoaded = _loadPersistedTranscripts();
+    }
+    if (loadPersistedState || persistedDeviceLoader != null) {
+      _persistedDeviceLoaded = _loadPersistedDevice();
+      unawaited(_persistedDeviceLoaded);
+    } else {
+      _persistedDeviceLoaded = Future<void>.value();
     }
   }
 
@@ -222,7 +232,7 @@ class RecorderController extends ChangeNotifier {
   }
 
   Future<void> _loadPersistedDevice() async {
-    final saved = await DeviceStore.load();
+    final saved = await _persistedDeviceLoader();
     if (saved.device == null && !saved.bound) return;
     lastKnownDevice = saved.device;
     lastKnownInfo = saved.info;
@@ -236,9 +246,142 @@ class RecorderController extends ChangeNotifier {
   }
 
   Future<void> _startBoundDeviceReconnect() async {
-    if (connected || phase == AppPhase.connecting || _ble.isConnecting) return;
+    if (connected ||
+        phase == AppPhase.scanning ||
+        phase == AppPhase.connecting ||
+        _ble.isConnecting) {
+      return;
+    }
     statusMessage = '正在自动连接已绑定设备…';
     await startScan();
+  }
+
+  /// Handle the one-shot action exposed through the iOS Action Button.
+  ///
+  /// Repeated invocations coalesce while a request is pending or sending. A
+  /// request is never retained beyond its reconnect attempt, preventing a
+  /// later unrelated auto-reconnect from unexpectedly starting a recording.
+  Future<void> requestRecordingFromShortcut() async {
+    shortcutNavigationRevision++;
+    notifyListeners();
+
+    if (_recordingShortcutPending || _recordingShortcutStarting) return;
+    if (recording) {
+      statusMessage = '录音中';
+      errorMessage = null;
+      notifyListeners();
+      return;
+    }
+    if (isWifiExportSession || isExporting) {
+      _failRecordingShortcut('正在导出录音，暂时无法开始新的录音');
+      return;
+    }
+
+    _recordingShortcutPending = true;
+    statusMessage = connected ? '正在开始快捷录音…' : '快捷录音：正在准备连接…';
+    errorMessage = null;
+    notifyListeners();
+
+    await _persistedDeviceLoaded;
+    if (!_recordingShortcutPending) return;
+
+    if (recording) {
+      _finishRecordingShortcut();
+      statusMessage = '录音中';
+      notifyListeners();
+      return;
+    }
+
+    if (connected && _ble.isConnected) {
+      if (blocksRecordingControl) {
+        _failRecordingShortcut('设备正忙，请稍后再按一次操作按钮');
+        return;
+      }
+      await _runPendingRecordingShortcutIfReady();
+      return;
+    }
+
+    if (!bound || lastKnownDevice == null) {
+      _failRecordingShortcut('未找到已绑定的录音豆，请先在应用中连接设备');
+      return;
+    }
+
+    statusMessage = '快捷录音：正在连接 ${lastKnownDevice!.displayName}…';
+    _startRecordingShortcutScanTimeout();
+    if (phase == AppPhase.connecting || _ble.isConnecting) {
+      _recordingShortcutConnecting = true;
+      _recordingShortcutTimer?.cancel();
+      _recordingShortcutTimer = null;
+    }
+    notifyListeners();
+
+    if (phase != AppPhase.scanning &&
+        phase != AppPhase.connecting &&
+        !_ble.isConnecting) {
+      await startScan();
+      if (_recordingShortcutPending &&
+          !connected &&
+          phase == AppPhase.idle &&
+          errorMessage != null) {
+        _failRecordingShortcut(errorMessage!);
+      }
+    }
+  }
+
+  void _startRecordingShortcutScanTimeout() {
+    _recordingShortcutTimer?.cancel();
+    _recordingShortcutTimer = Timer(recordingShortcutScanTimeout, () {
+      if (!_recordingShortcutPending || _recordingShortcutConnecting) return;
+      _failRecordingShortcut('未在 30 秒内找到已绑定的录音豆，请靠近设备后重试');
+    });
+  }
+
+  void _finishRecordingShortcut() {
+    _recordingShortcutPending = false;
+    _recordingShortcutConnecting = false;
+    _recordingShortcutTimer?.cancel();
+    _recordingShortcutTimer = null;
+  }
+
+  void _failRecordingShortcut(String message) {
+    _finishRecordingShortcut();
+    statusMessage = '快捷录音未开始';
+    errorMessage = message;
+    notifyListeners();
+  }
+
+  /// Returns null when there was no shortcut request, true for success/no-op,
+  /// and false when the BLE start command failed.
+  Future<bool?> _runPendingRecordingShortcutIfReady() async {
+    if (!_recordingShortcutPending || _recordingShortcutStarting) return null;
+    if (recording) {
+      _finishRecordingShortcut();
+      statusMessage = '录音中';
+      notifyListeners();
+      return true;
+    }
+    if (!connected || !_ble.isConnected) return null;
+    if (isWifiExportSession || isExporting) {
+      _failRecordingShortcut('正在导出录音，暂时无法开始新的录音');
+      return false;
+    }
+    if (blocksRecordingControl) {
+      _failRecordingShortcut('设备正忙，请稍后再按一次操作按钮');
+      return false;
+    }
+
+    _finishRecordingShortcut();
+    _recordingShortcutStarting = true;
+    try {
+      final started = await _startRecordChecked();
+      if (!started) {
+        statusMessage = '快捷录音未开始';
+        notifyListeners();
+      }
+      return started;
+    } finally {
+      _recordingShortcutStarting = false;
+    }
   }
 
   Future<void> _tryAutoConnectBoundDevice(List<ScannedDevice> scanned) async {
@@ -435,13 +578,29 @@ class RecorderController extends ChangeNotifier {
     }
 
     _streamSttStarting = true;
+    final revision = ++_sttLifecycleRevision;
+    SttStreamSession? session;
+    StreamSubscription<SttStreamEvent>? subscription;
     try {
-      await _sttStream?.close();
-      final session = _createStreamSession(key);
-      await _sttStreamSub?.cancel();
-      _sttStreamSub = session.events.listen(_onSttStreamEvent);
-      await session.start();
+      final previousSession = _sttStream;
+      final previousSubscription = _sttStreamSub;
+      _sttStream = null;
+      _sttStreamSub = null;
+      await previousSubscription?.cancel();
+      await previousSession?.close();
+      await previousSession?.dispose();
+      if (revision != _sttLifecycleRevision) return false;
+
+      session = _createStreamSession(key);
+      subscription = session.events.listen((event) {
+        if (revision == _sttLifecycleRevision) {
+          _onSttStreamEvent(event);
+        }
+      });
       _sttStream = session;
+      _sttStreamSub = subscription;
+      await session.start();
+      if (revision != _sttLifecycleRevision) return false;
       streamingSttActive = true;
       _preferStreamStt = true;
       transcriptError = null;
@@ -450,6 +609,7 @@ class RecorderController extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
+      if (revision != _sttLifecycleRevision) return false;
       debugPrint('[STT] stream start failed (${sttProvider.label}): $e');
       streamingSttActive = false;
       _preferStreamStt = false;
@@ -457,11 +617,17 @@ class RecorderController extends ChangeNotifier {
       transcriptError = sonioxTranslationModeActive
           ? '$_activeTranslationModeLabel连接失败：$e'
           : '实时转写连接失败（${sttProvider.label}），将回退批量转写：$e';
-      _sttStream = null;
+      if (identical(_sttStream, session)) _sttStream = null;
+      if (identical(_sttStreamSub, subscription)) _sttStreamSub = null;
+      await subscription?.cancel();
+      await session?.close();
+      await session?.dispose();
       notifyListeners();
       return false;
     } finally {
-      _streamSttStarting = false;
+      if (revision == _sttLifecycleRevision) {
+        _streamSttStarting = false;
+      }
     }
   }
 
@@ -583,15 +749,31 @@ class RecorderController extends ChangeNotifier {
     }
   }
 
+  @visibleForTesting
+  void attachSttStreamForTesting(SttStreamSession session) {
+    final revision = ++_sttLifecycleRevision;
+    _sttStream = session;
+    _sttStreamSub = session.events.listen((event) {
+      if (revision == _sttLifecycleRevision) {
+        _onSttStreamEvent(event);
+      }
+    });
+    streamingSttActive = true;
+  }
+
   Future<void> _finishStreamStt({String? bindPath}) async {
     final session = _sttStream;
     if (session == null && _pendingPcm.isEmpty) return;
+    final revision = _sttLifecycleRevision;
+    final subscription = _sttStreamSub;
     _sttStream = null;
+    _sttStreamSub = null;
     streamingSttActive = false;
     try {
       if (session != null) {
         _flushPendingPcmTo(session);
         final done = await session.finish();
+        if (revision != _sttLifecycleRevision) return;
         if (done != null && done.text.isNotEmpty) {
           // Prefer stitched session text when longer / complete.
           if (done.text.length >= transcript.length) {
@@ -600,6 +782,7 @@ class RecorderController extends ChangeNotifier {
           transcriptPartial = null;
         }
       }
+      if (revision != _sttLifecycleRevision) return;
       final text = transcript.trim();
       final path = bindPath ?? realtimeState.path;
       if (text.isNotEmpty && path != null) {
@@ -608,13 +791,44 @@ class RecorderController extends ChangeNotifier {
     } catch (e) {
       debugPrint('[STT] stream finish: $e');
     } finally {
-      _pendingPcm.clear();
-      await _sttStreamSub?.cancel();
-      _sttStreamSub = null;
+      await subscription?.cancel();
       await session?.dispose();
-      transcribing = false;
-      notifyListeners();
+      if (revision == _sttLifecycleRevision) {
+        _pendingPcm.clear();
+        transcribing = false;
+        notifyListeners();
+      }
     }
+  }
+
+  void _cancelStreamSttAfterPause() {
+    final session = _sttStream;
+    final subscription = _sttStreamSub;
+    _sttLifecycleRevision++;
+    _sttStream = null;
+    _sttStreamSub = null;
+    _streamSttStarting = false;
+    _pendingPcm.clear();
+    streamingSttActive = false;
+    if (transcribingPath == null) transcribing = false;
+    transcriptError = null;
+
+    Future<void>? closeFuture;
+    try {
+      // Soniox marks the socket closed synchronously before its first await.
+      closeFuture = session?.close();
+    } catch (e) {
+      debugPrint('[STT] pause close: $e');
+    }
+    unawaited(() async {
+      try {
+        await subscription?.cancel();
+        await closeFuture;
+        await session?.dispose();
+      } catch (e) {
+        debugPrint('[STT] pause dispose: $e');
+      }
+    }());
   }
 
   void _flushPendingPcmTo(SttStreamSession session) {
@@ -803,6 +1017,7 @@ class RecorderController extends ChangeNotifier {
 
   /// Fresh recording session: clear live draft and STT stream (keep per-file history).
   Future<void> _beginNewLiveTranscriptSession() async {
+    _sttLifecycleRevision++;
     transcript = '';
     transcriptPartial = null;
     transcriptError = null;
@@ -814,11 +1029,12 @@ class RecorderController extends ChangeNotifier {
     _streamSttStarting = false;
     _pendingPcm.clear();
     final session = _sttStream;
+    final subscription = _sttStreamSub;
     _sttStream = null;
-    try {
-      await _sttStreamSub?.cancel();
-    } catch (_) {}
     _sttStreamSub = null;
+    try {
+      await subscription?.cancel();
+    } catch (_) {}
     if (session != null) {
       try {
         // Close without waiting for done — avoid pasting previous session text.
@@ -956,7 +1172,9 @@ class RecorderController extends ChangeNotifier {
     required bool finalPass,
   }) async {
     if (!sttConfigured || !autoTranscribe) return;
+    if (_recordWireStatus == 2) return;
     if (transcribing && !finalPass) return;
+    final revision = _sttLifecycleRevision;
     final now = DateTime.now();
     final minBytes = finalPass ? 1600 : 24 * 1024; // ~2.5s vs ~3s of frames
     final minInterval = finalPass ? Duration.zero : const Duration(seconds: 8);
@@ -972,6 +1190,7 @@ class RecorderController extends ChangeNotifier {
     notifyListeners();
     try {
       final r = await _transcribePath(path);
+      if (revision != _sttLifecycleRevision || _recordWireStatus == 2) return;
       if (r.text.isNotEmpty) {
         if (finalPass) {
           transcript = r.text;
@@ -987,12 +1206,15 @@ class RecorderController extends ChangeNotifier {
         }
       }
     } catch (e) {
+      if (revision != _sttLifecycleRevision || _recordWireStatus == 2) return;
       // Soft-fail during rolling; surface message.
       transcriptError = '$e';
       debugPrint('[STT] rolling failed: $e');
     } finally {
-      transcribing = false;
-      notifyListeners();
+      if (revision == _sttLifecycleRevision) {
+        transcribing = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -1052,6 +1274,9 @@ class RecorderController extends ChangeNotifier {
   }
 
   final BleService _ble;
+  final PersistedDeviceLoader _persistedDeviceLoader;
+  final Duration recordingShortcutScanTimeout;
+  late final Future<void> _persistedDeviceLoaded;
   final DeviceCrypto _crypto = DeviceCrypto();
   late final WifiExportService _wifi;
   late final RealtimeBleStream _realtime;
@@ -1100,6 +1325,7 @@ class RecorderController extends ChangeNotifier {
   SttStreamSession? _sttStream;
   StreamSubscription? _sttStreamSub;
   bool _streamSttStarting = false;
+  int _sttLifecycleRevision = 0;
 
   /// When false, use rolling Ogg batch STT (stream failed or Opus unavailable).
   bool _preferStreamStt = true;
@@ -1119,6 +1345,14 @@ class RecorderController extends ChangeNotifier {
   bool recording = false;
   bool bound = false;
   ScannedDevice? activeDevice;
+
+  /// Incremented for each shortcut invocation so AppShell can select Home.
+  int shortcutNavigationRevision = 0;
+  bool _recordingShortcutPending = false;
+  bool _recordingShortcutConnecting = false;
+  bool _recordingShortcutStarting = false;
+  Timer? _recordingShortcutTimer;
+  bool get recordingShortcutPending => _recordingShortcutPending;
 
   /// Set right before a user-initiated disconnect() so the connection-state
   /// listener doesn't immediately try to auto-reconnect a bound device.
@@ -1319,6 +1553,12 @@ class RecorderController extends ChangeNotifier {
       return;
     }
 
+    if (_recordingShortcutPending) {
+      _recordingShortcutConnecting = true;
+      _recordingShortcutTimer?.cancel();
+      _recordingShortcutTimer = null;
+    }
+
     errorMessage = null;
     activeDevice = d;
     phase = AppPhase.connecting;
@@ -1328,6 +1568,8 @@ class RecorderController extends ChangeNotifier {
     // Start while the activity is visible. Android 12+ restricts launching a
     // foreground service after the app has already entered the background.
     await BackgroundSyncService.start();
+    bool? shortcutResult;
+    String? shortcutFailure;
     try {
       await _ble.connect(d.id, serviceUuidHint: d.serviceUuid);
       // Retry after GATT is ready in case Android initially rejected the
@@ -1351,6 +1593,8 @@ class RecorderController extends ChangeNotifier {
       // ECDH encrypt handshake so file exports can be decrypted.
       await Future<void>.delayed(const Duration(milliseconds: 300));
       await establishEncryptSession();
+      shortcutResult = await _runPendingRecordingShortcutIfReady();
+      if (shortcutResult == false) shortcutFailure = errorMessage;
       _startBatteryPoll();
       // Home may already be visible before an iOS connection completes, so its
       // initial tab refresh has already returned while disconnected. Always
@@ -1360,12 +1604,21 @@ class RecorderController extends ChangeNotifier {
       if (recording || info?.recording == true) {
         await _maybeStartAutoRealtime(reason: 'connected');
       }
+      if (shortcutResult == false) {
+        statusMessage = '快捷录音未开始';
+        errorMessage = shortcutFailure ?? '无法开始录音';
+        notifyListeners();
+      } else if (shortcutResult == true && recording) {
+        statusMessage = '录音中';
+        notifyListeners();
+      }
     } catch (e) {
       // Prefer cleaned message from BleService / strip noisy prefixes.
-      errorMessage = e.toString().replaceFirst(
+      final connectionError = e.toString().replaceFirst(
         RegExp(r'^(Bad state|Exception|StateError|TimeoutException):\s*'),
         '',
       );
+      errorMessage = connectionError;
       phase = AppPhase.idle;
       statusMessage = null;
       // Keep lastKnownDevice if we had one from a prior session.
@@ -1374,7 +1627,11 @@ class RecorderController extends ChangeNotifier {
       if (!_ble.isConnected) {
         await BackgroundSyncService.stop();
       }
-      notifyListeners();
+      if (_recordingShortcutPending) {
+        _failRecordingShortcut(connectionError);
+      } else {
+        notifyListeners();
+      }
     }
   }
 
@@ -1461,11 +1718,11 @@ class RecorderController extends ChangeNotifier {
     }
   }
 
-  Future<void> _send(List<int> frame, {String? label}) async {
+  Future<bool> _sendChecked(List<int> frame, {String? label}) async {
     if (!_ble.isConnected) {
       errorMessage = '未连接';
       notifyListeners();
-      return;
+      return false;
     }
     phase = AppPhase.busy;
     if (label != null) statusMessage = label;
@@ -1475,12 +1732,18 @@ class RecorderController extends ChangeNotifier {
       // A command just went through — any earlier error (e.g. a stale
       // "未连接" from a command that raced a disconnect) is no longer true.
       errorMessage = null;
+      return true;
     } catch (e) {
       errorMessage = e.toString();
+      return false;
     } finally {
       phase = connected ? AppPhase.ready : AppPhase.idle;
       notifyListeners();
     }
+  }
+
+  Future<void> _send(List<int> frame, {String? label}) async {
+    await _sendChecked(frame, label: label);
   }
 
   Future<void> refreshInfo({bool silent = false}) =>
@@ -1517,14 +1780,27 @@ class RecorderController extends ChangeNotifier {
   Future<void> syncTime() => _send(DeviceCommands.syncTime(), label: '正在同步时钟…');
 
   Future<void> startRecord() async {
+    await _startRecordChecked();
+  }
+
+  Future<bool> _startRecordChecked() async {
     await _yieldBacklogToCurrentRecording();
-    await _send(DeviceCommands.startRecord(), label: '正在开始录音…');
+    final sent = await _sendChecked(
+      DeviceCommands.startRecord(),
+      label: '正在开始录音…',
+    );
+    if (!sent) return false;
     // Optimistic; device will confirm via 0x18/0x82 or 1A06.
     _applyRecordStatus(1, source: 'app_start');
+    return true;
   }
 
   Future<void> pauseRecord() async {
-    await _send(DeviceCommands.pauseRecord(), label: '正在暂停录音…');
+    final sent = await _sendChecked(
+      DeviceCommands.pauseRecord(),
+      label: '正在暂停录音…',
+    );
+    if (!sent) return;
     // Optimistic; device will confirm via 0x18/0x82 status 0/2.
     _applyRecordStatus(2, source: 'app_pause');
   }
@@ -1589,10 +1865,16 @@ class RecorderController extends ChangeNotifier {
       if (wasRecording || realtimeState.active) {
         _realtime.onRecordingStopped();
       }
-      // End-of-utterance hint for live STT; full finish comes with realtime settle.
-      try {
-        _sttStream?.finalizeUtterance();
-      } catch (_) {}
+      if (status == 2) {
+        // Pause is a hard boundary: disconnect Soniox immediately and reject
+        // queued callbacks or a batch fallback from the paused take.
+        _cancelStreamSttAfterPause();
+      } else {
+        // A full stop may finish gracefully while realtime audio settles.
+        try {
+          _sttStream?.finalizeUtterance();
+        } catch (_) {}
+      }
       // Refresh inventory after hardware/app stop so Files tab shows the clip.
       if (status == 0 && connected) {
         unawaited(listFiles());
@@ -2874,6 +3156,7 @@ class RecorderController extends ChangeNotifier {
   void dispose() {
     _postBindFileRefreshTimer?.cancel();
     _fileListPageTimeout?.cancel();
+    _recordingShortcutTimer?.cancel();
     _stopBatteryPoll();
     for (final s in _subs) {
       s.cancel();

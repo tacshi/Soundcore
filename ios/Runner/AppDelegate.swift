@@ -12,5 +12,8 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    RecordingShortcutBridge.shared.configure(
+      binaryMessenger: engineBridge.applicationRegistrar.messenger()
+    )
   }
 }

@@ -132,13 +132,6 @@ class SonioxSttService {
       'file_id': fileId,
       'enable_language_identification': true,
       'enable_speaker_diarization': true,
-      'context': {
-        'terms': ['soundcore Work', 'Anker', '录音豆', 'D3200'],
-        'general': [
-          {'key': 'domain', 'value': 'voice notes / meeting recorder'},
-          {'key': 'product', 'value': 'soundcore Work D3200'},
-        ],
-      },
     };
     if (language != null && language.isNotEmpty) {
       config['language_hints'] = [language];

@@ -76,7 +76,7 @@ class SurfaceCard extends StatelessWidget {
               ]
             : AppColors.cardShadow,
       ),
-      child: child,
+      child: Material(color: Colors.transparent, child: child),
     );
     if (onTap == null) return card;
     return Material(

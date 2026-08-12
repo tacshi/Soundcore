@@ -17,10 +17,20 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   int _index = 0;
+  int _handledShortcutNavigationRevision = 0;
 
   @override
   Widget build(BuildContext context) {
     final c = context.watch<RecorderController>();
+    final shortcutRevision = c.shortcutNavigationRevision;
+    if (shortcutRevision != _handledShortcutNavigationRevision) {
+      _handledShortcutNavigationRevision = shortcutRevision;
+      if (_index != 0) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _index != 0) setState(() => _index = 0);
+        });
+      }
+    }
 
     if (c.isCommunicationLiveSession) {
       return const CommunicationScreen();
