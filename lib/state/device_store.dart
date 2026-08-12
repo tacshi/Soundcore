@@ -7,6 +7,14 @@ import 'package:path_provider/path_provider.dart';
 
 import '../protocol/models.dart';
 
+typedef PersistedDeviceState = ({
+  bool bound,
+  ScannedDevice? device,
+  DeviceInfoModel? info,
+});
+
+typedef PersistedDeviceLoader = Future<PersistedDeviceState> Function();
+
 /// Disk persistence for last-known / bound D3200 so Device tab survives
 /// app restart and BLE disconnect.
 class DeviceStore {
@@ -69,8 +77,7 @@ class DeviceStore {
     }
   }
 
-  static Future<({bool bound, ScannedDevice? device, DeviceInfoModel? info})>
-  load() async {
+  static Future<PersistedDeviceState> load() async {
     try {
       final f = await _file();
       if (!await f.exists()) {

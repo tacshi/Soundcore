@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:anker_recorder/ai/stt_types.dart';
 import 'package:anker_recorder/state/recorder_controller.dart';
 import 'package:anker_recorder/ui/screens/home_screen.dart';
@@ -317,5 +319,28 @@ void main() {
       ..notifyListeners();
     await tester.pump();
     expect(find.text('首页'), findsOneWidget);
+  });
+
+  testWidgets('recording shortcut returns the shell to Home', (tester) async {
+    final controller = RecorderController(loadPersistedState: false);
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: controller,
+        child: const MaterialApp(home: AppShell()),
+      ),
+    );
+
+    await tester.tap(find.text('设置'));
+    await tester.pump();
+    expect(find.text('AI 转写'), findsOneWidget);
+
+    unawaited(controller.requestRecordingFromShortcut());
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('AI 转写'), findsNothing);
+    expect(find.text('未连接设备'), findsOneWidget);
   });
 }

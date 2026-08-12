@@ -21,7 +21,6 @@ class SonioxSttStreamSession implements SttStreamSession {
     this.language,
     this.languageHints = const ['zh', 'en'],
     this.model = 'stt-rt-v5',
-    this.terms = const ['soundcore Work', 'Anker', '录音豆', 'D3200'],
     this.translation = const SonioxTranslationConfig.none(),
   });
 
@@ -30,7 +29,6 @@ class SonioxSttStreamSession implements SttStreamSession {
   final String? language;
   final List<String> languageHints;
   final String model;
-  final List<String> terms;
   final SonioxTranslationConfig translation;
 
   static final _uri = Uri.parse('wss://stt-rt.soniox.com/transcribe-websocket');
@@ -84,13 +82,6 @@ class SonioxSttStreamSession implements SttStreamSession {
       'enable_endpoint_detection': true,
       'max_endpoint_delay_ms': 1000,
       'translation': ?translationJson,
-      'context': {
-        'terms': terms,
-        'general': [
-          {'key': 'domain', 'value': 'voice notes / meeting recorder'},
-          {'key': 'product', 'value': 'soundcore Work D3200'},
-        ],
-      },
     };
   }
 
