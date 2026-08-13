@@ -68,7 +68,8 @@ class DeviceScreen extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 100),
           children: [
             const SectionLabel('电量'),
-            SurfaceCard(
+            _DeviceSection(
+              key: const ValueKey('device-battery-section'),
               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -127,7 +128,8 @@ class DeviceScreen extends StatelessWidget {
             ),
             const SizedBox(height: 18),
             const SectionLabel('录音'),
-            SurfaceCard(
+            _DeviceSection(
+              key: const ValueKey('device-recording-section'),
               child: Column(
                 children: [
                   Row(
@@ -168,7 +170,8 @@ class DeviceScreen extends StatelessWidget {
             ),
             const SizedBox(height: 18),
             const SectionLabel('配对绑定'),
-            SurfaceCard(
+            _DeviceSection(
+              key: const ValueKey('device-pairing-section'),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -185,7 +188,10 @@ class DeviceScreen extends StatelessWidget {
                     dense: true,
                     title: const Text(
                       '绑定后播报（实验）',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                     subtitle: Text(
                       c.bindBroadcastTone
@@ -263,7 +269,8 @@ class DeviceScreen extends StatelessWidget {
             ),
             const SizedBox(height: 18),
             const SectionLabel('设备信息'),
-            SurfaceCard(
+            _DeviceSection(
+              key: const ValueKey('device-info-section'),
               child: Column(
                 children: [
                   const _DeviceInfoRow(label: '产品', value: 'D3200'),
@@ -288,7 +295,8 @@ class DeviceScreen extends StatelessWidget {
             ),
             const SizedBox(height: 18),
             const SectionLabel('危险操作'),
-            SurfaceCard(
+            _DeviceSection(
+              key: const ValueKey('device-danger-section'),
               borderColor: AppColors.coral.withValues(alpha: 0.25),
               child: AccentButton(
                 label: '恢复出厂设置',
@@ -330,6 +338,29 @@ class DeviceScreen extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _DeviceSection extends StatelessWidget {
+  const _DeviceSection({
+    super.key,
+    required this.child,
+    this.padding = const EdgeInsets.fromLTRB(0, 12, 0, 16),
+    this.borderColor = AppColors.border,
+  });
+
+  final Widget child;
+  final EdgeInsetsGeometry padding;
+  final Color borderColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: borderColor)),
+      ),
+      child: Padding(padding: padding, child: child),
     );
   }
 }

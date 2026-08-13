@@ -16,13 +16,13 @@ class SettingsScreen extends StatelessWidget {
     final c = context.watch<RecorderController>();
 
     return GradientScaffold(
-      appBar: AppBar(title: const Text('设置')),
       child: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 100),
           children: [
             const SectionLabel('传输'),
-            SurfaceCard(
+            _SettingsGroup(
+              key: const ValueKey('settings-transfer-group'),
               child: _SettingsSwitch(
                 title: '自动传输',
                 subtitle: c.autoTransferActive
@@ -34,7 +34,8 @@ class SettingsScreen extends StatelessWidget {
             ),
             const SizedBox(height: 18),
             const SectionLabel('AI 转写'),
-            SurfaceCard(
+            _SettingsGroup(
+              key: const ValueKey('settings-stt-group'),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
@@ -77,15 +78,16 @@ class SettingsScreen extends StatelessWidget {
                     style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                   ),
                   const SizedBox(height: 8),
-                  Row(
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
-                      for (final (index, e) in const [
+                      for (final e in const [
                         ('zh', '中文'),
                         ('en', 'English'),
                         ('ja', '日本語'),
                         ('ko', '한국어'),
-                      ].indexed) ...[
-                        if (index > 0) const SizedBox(width: 8),
+                      ])
                         ChoiceChip(
                           label: Text(e.$2),
                           selected: c.transcriptLanguage == e.$1,
@@ -107,7 +109,6 @@ class SettingsScreen extends StatelessWidget {
                             fontSize: 12,
                           ),
                         ),
-                      ],
                     ],
                   ),
                   const Divider(height: 28),
@@ -125,6 +126,25 @@ class SettingsScreen extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _SettingsGroup extends StatelessWidget {
+  const _SettingsGroup({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: AppColors.border)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(0, 12, 0, 16),
+        child: child,
       ),
     );
   }
@@ -199,19 +219,11 @@ class _TranslationLanguageSettings extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppColors.violet.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.violet.withValues(alpha: 0.24)),
-      ),
-      child: _LanguageField(
-        label: '目标语言',
-        code: controller.translationTargetLanguage,
-        excludedCode: null,
-        onSelected: controller.setTranslationTargetLanguage,
-      ),
+    return _LanguageField(
+      label: '目标语言',
+      code: controller.translationTargetLanguage,
+      excludedCode: null,
+      onSelected: controller.setTranslationTargetLanguage,
     );
   }
 }
@@ -276,45 +288,37 @@ class _CommunicationLanguageSettings extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = controller;
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppColors.violet.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.violet.withValues(alpha: 0.24)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _LanguageField(
-            label: '我的语言',
-            code: c.ownerLanguage,
-            excludedCode: c.guestLanguage,
-            onSelected: c.setOwnerLanguage,
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Center(
-              child: IconButton(
-                key: const ValueKey('swap-communication-languages'),
-                tooltip: '交换语言',
-                visualDensity: VisualDensity.compact,
-                onPressed: c.swapCommunicationLanguages,
-                icon: const Icon(
-                  Icons.swap_vert_rounded,
-                  color: AppColors.violet,
-                ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _LanguageField(
+          label: '我的语言',
+          code: c.ownerLanguage,
+          excludedCode: c.guestLanguage,
+          onSelected: c.setOwnerLanguage,
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Center(
+            child: IconButton(
+              key: const ValueKey('swap-communication-languages'),
+              tooltip: '交换语言',
+              visualDensity: VisualDensity.compact,
+              onPressed: c.swapCommunicationLanguages,
+              icon: const Icon(
+                Icons.swap_vert_rounded,
+                color: AppColors.violet,
               ),
             ),
           ),
-          _LanguageField(
-            label: '对方语言',
-            code: c.guestLanguage,
-            excludedCode: c.ownerLanguage,
-            onSelected: c.setGuestLanguage,
-          ),
-        ],
-      ),
+        ),
+        _LanguageField(
+          label: '对方语言',
+          code: c.guestLanguage,
+          excludedCode: c.ownerLanguage,
+          onSelected: c.setGuestLanguage,
+        ),
+      ],
     );
   }
 }
@@ -619,137 +623,122 @@ class _ApiKeyFieldState extends State<_ApiKeyField> {
 
   @override
   Widget build(BuildContext context) {
-    final borderColor = widget.configured
-        ? AppColors.mint.withValues(alpha: 0.4)
-        : AppColors.accent.withValues(alpha: 0.35);
-
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppColors.accent.withValues(alpha: 0.05),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: borderColor),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Icon(
-                widget.configured ? Icons.verified_rounded : Icons.key_outlined,
-                size: 16,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Icon(
+              widget.configured ? Icons.verified_rounded : Icons.key_outlined,
+              size: 16,
+              color: widget.configured ? AppColors.mint : AppColors.amber,
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                widget.label,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+            Text(
+              widget.configured ? '已配置' : '未配置',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
                 color: widget.configured ? AppColors.mint : AppColors.amber,
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  widget.label,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 13,
-                  ),
-                ),
-              ),
-              Text(
-                widget.configured ? '已配置' : '未配置',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: widget.configured ? AppColors.mint : AppColors.amber,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _controller,
-            onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
-            obscureText: true,
-            autocorrect: false,
-            enableSuggestions: false,
-            style: const TextStyle(
-              fontSize: 13,
-              fontFamily: 'Menlo',
-              color: AppColors.textPrimary,
-            ),
-            decoration: InputDecoration(
-              isDense: true,
-              hintText: '粘贴 API Key…',
-              hintStyle: const TextStyle(
-                fontSize: 12,
-                color: AppColors.textMuted,
-              ),
-              filled: true,
-              fillColor: AppColors.bgElevated,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 12,
-              ),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: const BorderSide(color: AppColors.border),
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: const BorderSide(color: AppColors.border),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-                borderSide: const BorderSide(
-                  color: AppColors.accent,
-                  width: 1.4,
-                ),
-              ),
-              suffixIcon: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_controller.text.isNotEmpty)
-                    IconButton(
-                      tooltip: '清除',
-                      onPressed: () {
-                        _controller.clear();
-                        setState(() => _dirty = true);
-                        widget.onSave(null);
-                        setState(() => _dirty = false);
-                      },
-                      icon: const Icon(
-                        Icons.clear_rounded,
-                        size: 18,
-                        color: AppColors.textMuted,
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            onChanged: (_) {
-              if (!_dirty) setState(() => _dirty = true);
-            },
-            onSubmitted: (_) => _commit(),
-            onEditingComplete: _commit,
-          ),
-          if (_dirty) ...[
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: AccentButton(
-                label: '保存',
-                icon: Icons.save_rounded,
-                expand: false,
-                onPressed: _commit,
               ),
             ),
           ],
-          const SizedBox(height: 6),
-          Text(
-            '环境变量：export ${widget.envName}=…',
-            style: const TextStyle(
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _controller,
+          onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
+          obscureText: true,
+          autocorrect: false,
+          enableSuggestions: false,
+          style: const TextStyle(
+            fontSize: 13,
+            fontFamily: 'Menlo',
+            color: AppColors.textPrimary,
+          ),
+          decoration: InputDecoration(
+            isDense: true,
+            hintText: '粘贴 API Key…',
+            hintStyle: const TextStyle(
+              fontSize: 12,
               color: AppColors.textMuted,
-              fontSize: 10,
-              height: 1.3,
+            ),
+            filled: true,
+            fillColor: AppColors.bgElevated,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 12,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: const BorderSide(color: AppColors.accent, width: 1.4),
+            ),
+            suffixIcon: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_controller.text.isNotEmpty)
+                  IconButton(
+                    tooltip: '清除',
+                    onPressed: () {
+                      _controller.clear();
+                      setState(() => _dirty = true);
+                      widget.onSave(null);
+                      setState(() => _dirty = false);
+                    },
+                    icon: const Icon(
+                      Icons.clear_rounded,
+                      size: 18,
+                      color: AppColors.textMuted,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          onChanged: (_) {
+            if (!_dirty) setState(() => _dirty = true);
+          },
+          onSubmitted: (_) => _commit(),
+          onEditingComplete: _commit,
+        ),
+        if (_dirty) ...[
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: AccentButton(
+              label: '保存',
+              icon: Icons.save_rounded,
+              expand: false,
+              onPressed: _commit,
             ),
           ),
         ],
-      ),
+        const SizedBox(height: 6),
+        Text(
+          '环境变量：export ${widget.envName}=…',
+          style: const TextStyle(
+            color: AppColors.textMuted,
+            fontSize: 10,
+            height: 1.3,
+          ),
+        ),
+      ],
     );
   }
 }
