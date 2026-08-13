@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:anker_recorder/state/recorder_controller.dart';
 import 'package:anker_recorder/ui/screens/files_screen.dart';
+import 'package:anker_recorder/ui/widgets/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
@@ -9,7 +10,7 @@ import 'package:provider/provider.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('recording actions appear before rename on the card header', (
+  testWidgets('recording actions appear before rename on the flat row', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(390, 844);
@@ -38,6 +39,7 @@ void main() {
     expect(rename, findsOneWidget);
     expect(tester.getCenter(save).dx, lessThan(tester.getCenter(share).dx));
     expect(tester.getCenter(share).dx, lessThan(tester.getCenter(rename).dx));
+    expect(find.byType(SurfaceCard), findsNothing);
   });
 
   test(

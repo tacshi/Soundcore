@@ -36,6 +36,13 @@ class _AppShellState extends State<AppShell> {
       return const CommunicationScreen();
     }
 
+    final live = c.isLiveSession;
+    if (live && _index != 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _index != 0) setState(() => _index = 0);
+      });
+    }
+
     final pages = [
       const HomeScreen(),
       const DeviceScreen(),
@@ -44,80 +51,78 @@ class _AppShellState extends State<AppShell> {
 
     return Stack(
       children: [
-        IndexedStack(index: _index, children: pages),
-        Positioned(
-          left: 24,
-          right: 24,
-          bottom: 12,
-          child: _NavBar(
-            index: _index,
-            live: c.isLiveSession,
-            onSelect: (i) {
-              setState(() => _index = i);
-              final ctrl = context.read<RecorderController>();
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                // Home: refresh offline file inventory when not mid live take.
-                if (i == 0 && !ctrl.isLiveSession) {
-                  ctrl.refreshFilesOnTabEnter();
-                }
-                // Device: pull fresh battery / info on every visit.
-                if (i == 1) {
-                  ctrl.refreshInfoOnDeviceTabEnter();
-                }
-              });
-            },
+        IndexedStack(index: live ? 0 : _index, children: pages),
+        if (!live)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: _NavBar(
+              index: _index,
+              onSelect: (i) {
+                setState(() => _index = i);
+                final ctrl = context.read<RecorderController>();
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  // Home: refresh offline file inventory when not mid live take.
+                  if (i == 0 && !ctrl.isLiveSession) {
+                    ctrl.refreshFilesOnTabEnter();
+                  }
+                  // Device: pull fresh battery / info on every visit.
+                  if (i == 1) {
+                    ctrl.refreshInfoOnDeviceTabEnter();
+                  }
+                });
+              },
+            ),
           ),
-        ),
       ],
     );
   }
 }
 
 class _NavBar extends StatelessWidget {
-  const _NavBar({
-    required this.index,
-    required this.onSelect,
-    required this.live,
-  });
+  const _NavBar({required this.index, required this.onSelect});
 
   final int index;
   final ValueChanged<int> onSelect;
-  final bool live;
 
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: Colors.transparent,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
-        decoration: BoxDecoration(
-          color: AppColors.bgCard.withValues(alpha: 0.96),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: AppColors.border),
-        ),
-        child: Row(
-          children: [
-            _NavItem(
-              icon: live ? Icons.graphic_eq_rounded : Icons.home_rounded,
-              label: live ? '转写' : '首页',
-              selected: index == 0,
-              badge: live,
-              badgeColor: AppColors.coral,
-              onTap: () => onSelect(0),
-            ),
-            _NavItem(
-              icon: Icons.devices_rounded,
-              label: '设备',
-              selected: index == 1,
-              onTap: () => onSelect(1),
-            ),
-            _NavItem(
-              icon: Icons.settings_rounded,
-              label: '设置',
-              selected: index == 2,
-              onTap: () => onSelect(2),
-            ),
-          ],
+      color: AppColors.bgCard,
+      child: SafeArea(
+        top: false,
+        child: Container(
+          key: const ValueKey('bottom-navigation-bar'),
+          padding: const EdgeInsets.fromLTRB(12, 5, 12, 3),
+          decoration: const BoxDecoration(
+            border: Border(top: BorderSide(color: AppColors.border)),
+          ),
+          child: Row(
+            children: [
+              _NavItem(
+                key: const ValueKey('nav-home'),
+                icon: Icons.home_rounded,
+                label: '首页',
+                selected: index == 0,
+                onTap: () => onSelect(0),
+              ),
+              _NavItem(
+                key: const ValueKey('nav-device'),
+                icon: Icons.devices_rounded,
+                label: '设备',
+                selected: index == 1,
+                onTap: () => onSelect(1),
+              ),
+              _NavItem(
+                key: const ValueKey('nav-settings'),
+                icon: Icons.settings_rounded,
+                label: '设置',
+                selected: index == 2,
+                onTap: () => onSelect(2),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -126,20 +131,17 @@ class _NavBar extends StatelessWidget {
 
 class _NavItem extends StatelessWidget {
   const _NavItem({
+    super.key,
     required this.icon,
     required this.label,
     required this.selected,
     required this.onTap,
-    this.badge = false,
-    this.badgeColor = AppColors.mint,
   });
 
   final IconData icon;
   final String label;
   final bool selected;
   final VoidCallback onTap;
-  final bool badge;
-  final Color badgeColor;
 
   @override
   Widget build(BuildContext context) {
@@ -147,38 +149,13 @@ class _NavItem extends StatelessWidget {
     return Expanded(
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(13),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
           padding: const EdgeInsets.symmetric(vertical: 6),
-          decoration: BoxDecoration(
-            color: selected
-                ? AppColors.accent.withValues(alpha: 0.12)
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(13),
-          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  Icon(icon, color: color, size: 20),
-                  if (badge)
-                    Positioned(
-                      right: -2,
-                      top: -2,
-                      child: Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: badgeColor,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
+              Icon(icon, color: color, size: 20),
               const SizedBox(height: 2),
               Text(
                 label,
@@ -187,6 +164,14 @@ class _NavItem extends StatelessWidget {
                   fontSize: 10,
                   fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                 ),
+              ),
+              const SizedBox(height: 3),
+              AnimatedContainer(
+                key: selected ? const ValueKey('active-tab-indicator') : null,
+                duration: const Duration(milliseconds: 180),
+                width: selected ? 22 : 0,
+                height: 2,
+                color: selected ? AppColors.accent : Colors.transparent,
               ),
             ],
           ),

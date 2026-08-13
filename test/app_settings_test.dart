@@ -10,6 +10,7 @@ void main() {
     expect(settings.translationTargetLanguage, 'zh');
     expect(settings.ownerLanguage, 'zh');
     expect(settings.guestLanguage, 'en');
+    expect(settings.transcriptLanguage, 'auto');
   });
 
   test('translation settings round-trip through JSON', () {
@@ -54,5 +55,15 @@ void main() {
 
     expect(settings.ownerLanguage, 'zh');
     expect(settings.guestLanguage, 'en');
+  });
+
+  test('legacy xAI settings are ignored when settings are rewritten', () {
+    final settings = AppSettings.fromJson(const {
+      'sttProvider': 'xai',
+      'xaiApiKey': 'obsolete',
+    });
+
+    expect(settings.toJson(), isNot(contains('sttProvider')));
+    expect(settings.toJson(), isNot(contains('xaiApiKey')));
   });
 }

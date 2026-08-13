@@ -7,7 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../ai/stt_types.dart';
 
-/// Lightweight JSON settings (API keys, STT provider, toggles).
+/// Lightweight JSON settings (Soniox API key, STT modes, toggles).
 class AppSettingsStore {
   AppSettingsStore._();
 
@@ -43,7 +43,7 @@ class AppSettingsStore {
       await f.writeAsString(
         const JsonEncoder.withIndent('  ').convert(s.toJson()),
       );
-      debugPrint('[AppSettings] saved provider=${s.sttProvider.name}');
+      debugPrint('[AppSettings] saved');
     } catch (e) {
       debugPrint('[AppSettings] save failed: $e');
     }
@@ -52,21 +52,17 @@ class AppSettingsStore {
 
 class AppSettings {
   const AppSettings({
-    this.xaiApiKey,
     this.sonioxApiKey,
-    this.sttProvider = SttProvider.soniox,
     this.autoTranscribe = true,
     this.autoRealtime = true,
-    this.transcriptLanguage = 'zh',
+    this.transcriptLanguage = 'auto',
     this.sttMode = SttDisplayMode.transcription,
     this.translationTargetLanguage = 'zh',
     this.ownerLanguage = 'zh',
     this.guestLanguage = 'en',
   });
 
-  final String? xaiApiKey;
   final String? sonioxApiKey;
-  final SttProvider sttProvider;
   final bool autoTranscribe;
   final bool autoRealtime;
   final String transcriptLanguage;
@@ -76,9 +72,7 @@ class AppSettings {
   final String guestLanguage;
 
   AppSettings copyWith({
-    String? xaiApiKey,
     String? sonioxApiKey,
-    SttProvider? sttProvider,
     bool? autoTranscribe,
     bool? autoRealtime,
     String? transcriptLanguage,
@@ -86,13 +80,10 @@ class AppSettings {
     String? translationTargetLanguage,
     String? ownerLanguage,
     String? guestLanguage,
-    bool clearXai = false,
     bool clearSoniox = false,
   }) {
     return AppSettings(
-      xaiApiKey: clearXai ? null : (xaiApiKey ?? this.xaiApiKey),
       sonioxApiKey: clearSoniox ? null : (sonioxApiKey ?? this.sonioxApiKey),
-      sttProvider: sttProvider ?? this.sttProvider,
       autoTranscribe: autoTranscribe ?? this.autoTranscribe,
       autoRealtime: autoRealtime ?? this.autoRealtime,
       transcriptLanguage: transcriptLanguage ?? this.transcriptLanguage,
@@ -105,10 +96,8 @@ class AppSettings {
   }
 
   Map<String, dynamic> toJson() => {
-    if (xaiApiKey != null && xaiApiKey!.isNotEmpty) 'xaiApiKey': xaiApiKey,
     if (sonioxApiKey != null && sonioxApiKey!.isNotEmpty)
       'sonioxApiKey': sonioxApiKey,
-    'sttProvider': sttProvider.name,
     'autoTranscribe': autoTranscribe,
     'autoRealtime': autoRealtime,
     'transcriptLanguage': transcriptLanguage,
@@ -119,11 +108,6 @@ class AppSettings {
   };
 
   factory AppSettings.fromJson(Map<String, dynamic> map) {
-    final providerName = '${map['sttProvider'] ?? 'soniox'}';
-    final provider = SttProvider.values.firstWhere(
-      (e) => e.name == providerName,
-      orElse: () => SttProvider.soniox,
-    );
     final modeName = _str(map['sttMode']);
     final sttMode = SttDisplayMode.values.firstWhere(
       (mode) => mode.name == modeName,
@@ -138,12 +122,10 @@ class AppSettings {
       guestLanguage = 'en';
     }
     return AppSettings(
-      xaiApiKey: _str(map['xaiApiKey']),
       sonioxApiKey: _str(map['sonioxApiKey']),
-      sttProvider: provider,
       autoTranscribe: map['autoTranscribe'] != false,
       autoRealtime: map['autoRealtime'] != false,
-      transcriptLanguage: _str(map['transcriptLanguage']) ?? 'zh',
+      transcriptLanguage: _str(map['transcriptLanguage']) ?? 'auto',
       sttMode: sttMode,
       translationTargetLanguage:
           (_str(map['translationTargetLanguage']) ?? 'zh').toLowerCase(),

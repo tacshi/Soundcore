@@ -35,13 +35,10 @@ void main() {
   });
 
   test('normal Soniox transcription has no translation configuration', () {
-    final session = SonioxSttStreamSession(
-      apiKey: 'test',
-      languageHints: const ['zh', 'en'],
-    );
+    final session = SonioxSttStreamSession(apiKey: 'test');
 
     expect(session.configForTesting, isNot(contains('translation')));
-    expect(session.configForTesting['language_hints'], ['zh', 'en']);
+    expect(session.configForTesting['language_hints'], isEmpty);
   });
 
   test('live transcription does not prime Soniox with product metadata', () {

@@ -113,17 +113,16 @@ class _FilesBodyState extends State<FilesBody>
             ),
           ],
           const SizedBox(height: 8),
-          Material(
-            color: AppColors.bgElevated,
-            borderRadius: BorderRadius.circular(12),
+          DecoratedBox(
+            decoration: const BoxDecoration(
+              border: Border(bottom: BorderSide(color: AppColors.border)),
+            ),
             child: TabBar(
               controller: _tabs,
               dividerColor: Colors.transparent,
-              indicatorSize: TabBarIndicatorSize.tab,
-              indicator: BoxDecoration(
-                color: AppColors.accent.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(10),
-              ),
+              indicatorSize: TabBarIndicatorSize.label,
+              indicatorColor: AppColors.accent,
+              indicatorWeight: 2,
               labelColor: AppColors.accent,
               unselectedLabelColor: AppColors.textMuted,
               labelStyle: const TextStyle(
@@ -356,21 +355,20 @@ class _LocalExportsTabState extends State<_LocalExportsTab> {
         ],
         const SizedBox(height: 4),
         Expanded(
-          child: ListView.builder(
+          child: ListView.separated(
             padding: const EdgeInsets.only(bottom: 88),
             itemCount: widget.paths.length,
+            separatorBuilder: (_, _) =>
+                const Divider(height: 1, color: AppColors.border),
             itemBuilder: (context, i) {
               final path = widget.paths[i];
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: _LocalExportCard(
-                  path: path,
-                  selecting: _selecting,
-                  selected: _selected.contains(path),
-                  onSelected: () => setState(() {
-                    if (!_selected.add(path)) _selected.remove(path);
-                  }),
-                ),
+              return _LocalExportCard(
+                path: path,
+                selecting: _selecting,
+                selected: _selected.contains(path),
+                onSelected: () => setState(() {
+                  if (!_selected.add(path)) _selected.remove(path);
+                }),
               );
             },
           ),
@@ -542,7 +540,8 @@ class _DeviceFilesTab extends StatelessWidget {
               : ListView.separated(
                   padding: const EdgeInsets.only(bottom: 88),
                   itemCount: c.files.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 10),
+                  separatorBuilder: (_, _) =>
+                      const Divider(height: 1, color: AppColors.border),
                   itemBuilder: (context, i) {
                     final f = c.files[i];
                     final selected = c.selectedFileIds.contains(f.fileId);
@@ -790,169 +789,175 @@ class _LocalExportCard extends StatelessWidget {
         ? c.fileTranscriptionProgress
         : null;
 
-    return SurfaceCard(
-      shadow: false,
-      borderColor: loaded || expanded
-          ? AppColors.accent.withValues(alpha: 0.5)
-          : hasText
-          ? AppColors.violet.withValues(alpha: 0.3)
-          : null,
-      onTap: selecting ? onSelected : () => c.toggleLocalExpanded(path),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
+    final backgroundColor = selected
+        ? AppColors.mint.withValues(alpha: 0.08)
+        : loaded || expanded
+        ? AppColors.accent.withValues(alpha: 0.06)
+        : Colors.transparent;
+    return Material(
+      color: backgroundColor,
+      child: InkWell(
+        onTap: selecting ? onSelected : () => c.toggleLocalExpanded(path),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (selecting) ...[
-                Checkbox(value: selected, onChanged: (_) => onSelected?.call()),
-                const SizedBox(width: 4),
-              ],
-              Icon(
-                name.endsWith('.opus') || name.endsWith('.wav')
-                    ? Icons.audio_file_rounded
-                    : Icons.insert_drive_file_rounded,
-                color: loaded ? AppColors.accent : AppColors.mint,
-                size: 22,
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      name,
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: loaded
-                            ? AppColors.accent
-                            : AppColors.textPrimary,
-                      ),
-                      overflow: TextOverflow.ellipsis,
+              Row(
+                children: [
+                  if (selecting) ...[
+                    Checkbox(
+                      value: selected,
+                      onChanged: (_) => onSelected?.call(),
                     ),
-                    Text(
-                      transcribingThis
-                          ? '$duration • 转写中'
-                          : hasText
-                          ? '$duration • 已转写'
-                          : duration,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: transcribingThis || hasText
-                            ? AppColors.violet
-                            : AppColors.textMuted,
-                      ),
+                    const SizedBox(width: 4),
+                  ],
+                  Icon(
+                    name.endsWith('.opus') || name.endsWith('.wav')
+                        ? Icons.audio_file_rounded
+                        : Icons.insert_drive_file_rounded,
+                    color: loaded ? AppColors.accent : AppColors.mint,
+                    size: 22,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          name,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: loaded
+                                ? AppColors.accent
+                                : AppColors.textPrimary,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        Text(
+                          transcribingThis
+                              ? '$duration • 转写中'
+                              : hasText
+                              ? '$duration • 已转写'
+                              : duration,
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: transcribingThis || hasText
+                                ? AppColors.violet
+                                : AppColors.textMuted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (!selecting) ...[
+                    IconButton(
+                      tooltip: hasText ? '保存录音和转写' : '保存录音',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => _saveRecording(context, c),
+                      icon: const Icon(Icons.file_download_outlined, size: 19),
+                    ),
+                    IconButton(
+                      tooltip: hasText ? '分享录音和转写' : '分享录音',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => _shareRecording(context, c),
+                      icon: const Icon(Icons.ios_share_rounded, size: 19),
+                    ),
+                    IconButton(
+                      tooltip: '重命名',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => _rename(context, c),
+                      icon: const Icon(Icons.edit_outlined, size: 19),
+                    ),
+                    Icon(
+                      expanded
+                          ? Icons.expand_less_rounded
+                          : Icons.expand_more_rounded,
+                      color: AppColors.textMuted,
                     ),
                   ],
-                ),
+                ],
               ),
-              if (!selecting) ...[
-                IconButton(
-                  tooltip: hasText ? '保存录音和转写' : '保存录音',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => _saveRecording(context, c),
-                  icon: const Icon(Icons.file_download_outlined, size: 19),
+              if (hasText && !expanded && !selecting) ...[
+                const SizedBox(height: 8),
+                Text(
+                  text,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    height: 1.4,
+                    color: AppColors.textPrimary,
+                  ),
                 ),
-                IconButton(
-                  tooltip: hasText ? '分享录音和转写' : '分享录音',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => _shareRecording(context, c),
-                  icon: const Icon(Icons.ios_share_rounded, size: 19),
-                ),
-                IconButton(
-                  tooltip: '重命名',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => _rename(context, c),
-                  icon: const Icon(Icons.edit_outlined, size: 19),
-                ),
-                Icon(
-                  expanded
-                      ? Icons.expand_less_rounded
-                      : Icons.expand_more_rounded,
-                  color: AppColors.textMuted,
-                ),
+              ],
+              if (expanded && !selecting) ...[
+                const SizedBox(height: 8),
+                const Divider(height: 1, color: AppColors.border),
+                if (transcriptionProgress != null) ...[
+                  const SizedBox(height: 12),
+                  _FileTranscriptionProgress(progress: transcriptionProgress),
+                ],
+                if (hasText) ...[
+                  SizedBox(height: transcriptionProgress == null ? 10 : 6),
+                  if (c.sttConfigured)
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: c.transcribing
+                            ? null
+                            : () => _confirmRetranscribe(context, c),
+                        icon: const Icon(Icons.refresh_rounded, size: 18),
+                        label: const Text(
+                          '重新转写',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ),
+                  const SizedBox(height: 6),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 220),
+                    child: SingleChildScrollView(
+                      child: SelectableText(
+                        text,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          height: 1.45,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ] else ...[
+                  const SizedBox(height: 8),
+                  if (c.sttConfigured) ...[
+                    if (transcriptionProgress == null)
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: c.transcribing
+                              ? null
+                              : () => c.transcribeLocalFile(path),
+                          icon: const Icon(Icons.subtitles_outlined, size: 16),
+                          label: const Text('转写此文件'),
+                        ),
+                      ),
+                  ] else
+                    const Text(
+                      '在「设置」配置 API Key 后可转写此文件',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+                ],
+                const SizedBox(height: 8),
+                InlinePlayer(path: path, fileId: fileId),
               ],
             ],
           ),
-          if (hasText && !expanded && !selecting) ...[
-            const SizedBox(height: 8),
-            Text(
-              text,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 13,
-                height: 1.4,
-                color: AppColors.textPrimary,
-              ),
-            ),
-          ],
-          if (expanded && !selecting) ...[
-            const SizedBox(height: 8),
-            const Divider(height: 1, color: AppColors.border),
-            if (transcriptionProgress != null) ...[
-              const SizedBox(height: 12),
-              _FileTranscriptionProgress(progress: transcriptionProgress),
-            ],
-            if (hasText) ...[
-              SizedBox(height: transcriptionProgress == null ? 10 : 6),
-              if (c.sttConfigured)
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton.icon(
-                    onPressed: c.transcribing
-                        ? null
-                        : () => _confirmRetranscribe(context, c),
-                    icon: const Icon(Icons.refresh_rounded, size: 18),
-                    label: const Text('重新转写', style: TextStyle(fontSize: 12)),
-                  ),
-                ),
-              const SizedBox(height: 6),
-              Container(
-                width: double.infinity,
-                constraints: const BoxConstraints(maxHeight: 220),
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: AppColors.bg,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: SingleChildScrollView(
-                  child: SelectableText(
-                    text,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      height: 1.45,
-                      color: AppColors.textPrimary,
-                    ),
-                  ),
-                ),
-              ),
-            ] else ...[
-              const SizedBox(height: 8),
-              if (c.sttConfigured) ...[
-                if (transcriptionProgress == null)
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: TextButton.icon(
-                      onPressed: c.transcribing
-                          ? null
-                          : () => c.transcribeLocalFile(path),
-                      icon: const Icon(Icons.subtitles_outlined, size: 16),
-                      label: const Text('转写此文件'),
-                    ),
-                  ),
-              ] else
-                const Text(
-                  '在「设置」配置 API Key 后可转写此文件',
-                  style: TextStyle(fontSize: 12, color: AppColors.textMuted),
-                ),
-            ],
-            const SizedBox(height: 8),
-            InlinePlayer(path: path, fileId: fileId),
-          ],
-        ],
+        ),
       ),
     );
   }
@@ -1660,91 +1665,100 @@ class _DeviceFileTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SurfaceCard(
-      shadow: false,
-      borderColor: selected ? AppColors.mint.withValues(alpha: 0.55) : null,
-      onTap: onTap,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      child: Row(
-        children: [
-          if (selecting) ...[
-            Icon(
-              selected ? Icons.check_circle_rounded : Icons.circle_outlined,
-              color: selected ? AppColors.mint : AppColors.textMuted,
-              size: 22,
-            ),
-            const SizedBox(width: 10),
-          ],
-          Container(
-            width: 42,
-            height: 42,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(12),
-              color: AppColors.violet.withValues(alpha: 0.15),
-            ),
-            child: Icon(
-              hasLocal ? Icons.audiotrack_rounded : Icons.audiotrack_outlined,
-              color: AppColors.violet,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  file.title,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
+    return Material(
+      color: selected
+          ? AppColors.mint.withValues(alpha: 0.08)
+          : Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+          child: Row(
+            children: [
+              if (selecting) ...[
+                Icon(
+                  selected ? Icons.check_circle_rounded : Icons.circle_outlined,
+                  color: selected ? AppColors.mint : AppColors.textMuted,
+                  size: 22,
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  'id ${file.fileId} · ${file.sizeLabel}'
-                  '${hasLocal ? ' · 已导出' : ''}',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: AppColors.textMuted,
-                    fontFeatures: [FontFeature.tabularFigures()],
+                const SizedBox(width: 10),
+              ],
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  color: AppColors.violet.withValues(alpha: 0.15),
+                ),
+                child: Icon(
+                  hasLocal
+                      ? Icons.audiotrack_rounded
+                      : Icons.audiotrack_outlined,
+                  color: AppColors.violet,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      file.title,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'id ${file.fileId} · ${file.sizeLabel}'
+                      '${hasLocal ? ' · 已导出' : ''}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textMuted,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (!selecting) ...[
+                IconButton(
+                  tooltip: hasLocal
+                      ? '已下载'
+                      : downloading
+                      ? '正在下载'
+                      : '通过蓝牙下载',
+                  onPressed: onExport,
+                  icon: downloading
+                      ? const SizedBox.square(
+                          dimension: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            color: AppColors.mint,
+                          ),
+                        )
+                      : Icon(
+                          hasLocal
+                              ? Icons.download_done_rounded
+                              : Icons.download_rounded,
+                          color: hasLocal
+                              ? AppColors.textMuted
+                              : AppColors.mint,
+                        ),
+                ),
+                IconButton(
+                  tooltip: '在设备上删除',
+                  onPressed: onDelete,
+                  icon: const Icon(
+                    Icons.delete_outline_rounded,
+                    color: AppColors.coral,
                   ),
                 ),
               ],
-            ),
+            ],
           ),
-          if (!selecting) ...[
-            IconButton(
-              tooltip: hasLocal
-                  ? '已下载'
-                  : downloading
-                  ? '正在下载'
-                  : '通过蓝牙下载',
-              onPressed: onExport,
-              icon: downloading
-                  ? const SizedBox.square(
-                      dimension: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.5,
-                        color: AppColors.mint,
-                      ),
-                    )
-                  : Icon(
-                      hasLocal
-                          ? Icons.download_done_rounded
-                          : Icons.download_rounded,
-                      color: hasLocal ? AppColors.textMuted : AppColors.mint,
-                    ),
-            ),
-            IconButton(
-              tooltip: '在设备上删除',
-              onPressed: onDelete,
-              icon: const Icon(
-                Icons.delete_outline_rounded,
-                color: AppColors.coral,
-              ),
-            ),
-          ],
-        ],
+        ),
       ),
     );
   }
