@@ -8,8 +8,7 @@ import 'widgets.dart';
 
 /// Live / final AI transcript card.
 ///
-/// Provider selection lives in Settings. Use [compact] on the live home view
-/// to avoid duplicating large chrome.
+/// Use [compact] on the live home view to avoid duplicating large chrome.
 class TranscriptPanel extends StatelessWidget {
   const TranscriptPanel({super.key, this.compact = false});
 
@@ -43,7 +42,7 @@ class TranscriptPanel extends StatelessWidget {
           children: [
             if (!c.sttConfigured)
               Text(
-                '转写未就绪：在「设置」配置 ${c.sttProvider.envKeyName}',
+                '转写未就绪：在「设置」配置 SONIOX_API_KEY',
                 style: const TextStyle(color: AppColors.amber, fontSize: 12),
               )
             else if (hasText)
@@ -51,8 +50,7 @@ class TranscriptPanel extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      '使用 ${c.sttProvider.label}'
-                      '${c.streamingSttActive ? ' · 流式' : ''}',
+                      '使用 Soniox${c.streamingSttActive ? ' · 流式' : ''}',
                       style: const TextStyle(
                         color: AppColors.textMuted,
                         fontSize: 12,
@@ -93,10 +91,10 @@ class TranscriptPanel extends StatelessWidget {
               Expanded(
                 child: Text(
                   c.streamingSttActive
-                      ? 'AI 实时转写（${c.sttProvider.label}）'
+                      ? 'AI 实时转写（Soniox）'
                       : c.transcribing
-                      ? 'AI 转写中（${c.sttProvider.label}）…'
-                      : 'AI 转写 · ${c.sttProvider.label}',
+                      ? 'AI 转写中（Soniox）…'
+                      : 'AI 转写 · Soniox',
                   style: const TextStyle(
                     fontWeight: FontWeight.w700,
                     fontSize: 13,
@@ -124,7 +122,7 @@ class TranscriptPanel extends StatelessWidget {
           if (!c.sttConfigured) ...[
             const SizedBox(height: 8),
             Text(
-              '未配置 ${c.sttProvider.envKeyName}。请在「设置」查看说明。',
+              '未配置 SONIOX_API_KEY。请在「设置」查看说明。',
               style: const TextStyle(
                 color: AppColors.amber,
                 fontSize: 12,

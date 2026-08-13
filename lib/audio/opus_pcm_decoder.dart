@@ -9,7 +9,7 @@ import 'ogg_opus.dart';
 ///
 /// Device stream is bare concatenated frames (see [OggOpus]). Trailing zero
 /// padding is stripped before libopus. Output defaults to **16 kHz mono** so
-/// chunks can go straight to xAI WS STT (`sample_rate=16000&encoding=pcm`).
+/// chunks can go straight to streaming STT (`sample_rate=16000`).
 class OpusPcmDecoder {
   OpusPcmDecoder({this.outputSampleRate = 16000, this.channels = 1});
 

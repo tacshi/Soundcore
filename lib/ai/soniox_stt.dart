@@ -71,12 +71,7 @@ class SonioxSttService {
       await _waitCompleted(transcriptionId, onProgress: onProgress);
       onProgress?.call(const SttFileProgress(SttFileStage.fetching));
       final text = normalizeSttText(await _fetchTranscript(transcriptionId));
-      return SttResult(
-        text: text,
-        sourcePath: path,
-        provider: SttProvider.soniox,
-        language: language,
-      );
+      return SttResult(text: text, sourcePath: path, language: language);
     } finally {
       // Best-effort cleanup (Soniox quotas file storage).
       if (transcriptionId != null) {
@@ -133,11 +128,8 @@ class SonioxSttService {
       'enable_language_identification': true,
       'enable_speaker_diarization': true,
     };
-    if (language != null && language.isNotEmpty) {
+    if (language != null && language.isNotEmpty && language != 'auto') {
       config['language_hints'] = [language];
-    } else {
-      // Default bilingual hints for this product.
-      config['language_hints'] = ['zh', 'en'];
     }
 
     debugPrint('[Soniox] create transcription file_id=$fileId');

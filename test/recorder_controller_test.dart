@@ -239,13 +239,11 @@ void main() {
     expect(scrollController.offset, 0);
   });
 
-  test('translation modes enforce provider and distinct languages', () {
+  test('Soniox translation modes enforce distinct languages', () {
     final controller = RecorderController(loadPersistedState: false);
     addTearDown(controller.dispose);
 
-    controller
-      ..autoTranscribe = true
-      ..sttProvider = SttProvider.soniox;
+    controller.autoTranscribe = true;
     controller.setSttMode(SttDisplayMode.translation);
     expect(controller.translationModeActive, isTrue);
 
@@ -271,7 +269,7 @@ void main() {
     expect(controller.ownerLanguage, 'en');
     expect(controller.guestLanguage, 'zh');
 
-    controller.setSttProvider(SttProvider.xai);
+    controller.setAutoTranscribe(false);
     expect(controller.sttMode, SttDisplayMode.transcription);
     expect(controller.sonioxTranslationModeAvailable, isFalse);
   });
@@ -285,8 +283,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
 
     final controller = RecorderController(loadPersistedState: false)
-      ..autoTranscribe = true
-      ..sttProvider = SttProvider.soniox;
+      ..autoTranscribe = true;
     addTearDown(controller.dispose);
 
     await tester.pumpWidget(
@@ -296,6 +293,15 @@ void main() {
       ),
     );
     expect(find.text('设置'), findsNothing);
+    expect(find.text('服务商'), findsNothing);
+    expect(find.textContaining('xAI'), findsNothing);
+    expect(find.byKey(const ValueKey('apikey-soniox')), findsOneWidget);
+    final languageSelector = tester.widget<DropdownButton<String>>(
+      find.byKey(const ValueKey('transcript-language-selector')),
+    );
+    expect(languageSelector.items!.first.value, 'auto');
+    expect(languageSelector.items!.first.child, isA<Text>());
+    expect((languageSelector.items!.first.child as Text).data, '自动');
     await tester.ensureVisible(
       find.byKey(const ValueKey('stt-display-mode-selector')),
     );
@@ -316,10 +322,9 @@ void main() {
     expect(find.byKey(const ValueKey('settings-stt-group')), findsOneWidget);
     expect(find.byType(SurfaceCard), findsNothing);
 
-    controller.setSttProvider(SttProvider.xai);
+    languageSelector.onChanged?.call('en');
     await tester.pump();
-    expect(controller.sttMode, SttDisplayMode.transcription);
-    expect(find.text('目标语言'), findsNothing);
+    expect(controller.transcriptLanguage, 'en');
   });
 
   testWidgets('connected Device uses flat management sections', (tester) async {
@@ -363,7 +368,6 @@ void main() {
       ..connected = true
       ..recording = true
       ..autoTranscribe = true
-      ..sttProvider = SttProvider.soniox
       ..sttMode = SttDisplayMode.translation
       ..translationTargetLanguage = 'zh'
       ..translationTurns = const [
@@ -465,7 +469,6 @@ void main() {
       ..connected = true
       ..recording = true
       ..autoTranscribe = true
-      ..sttProvider = SttProvider.soniox
       ..sttMode = SttDisplayMode.translation
       ..translationTargetLanguage = 'zh'
       ..translationTurns = initialTurns;
@@ -534,7 +537,6 @@ void main() {
       ..connected = true
       ..recording = true
       ..autoTranscribe = true
-      ..sttProvider = SttProvider.soniox
       ..sttMode = SttDisplayMode.conversation
       ..ownerLanguage = 'zh'
       ..guestLanguage = 'en'

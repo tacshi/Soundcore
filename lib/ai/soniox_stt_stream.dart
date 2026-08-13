@@ -19,7 +19,7 @@ class SonioxSttStreamSession implements SttStreamSession {
     required this.apiKey,
     this.sampleRate = 16000,
     this.language,
-    this.languageHints = const ['zh', 'en'],
+    this.languageHints = const [],
     this.model = 'stt-rt-v5',
     this.translation = const SonioxTranslationConfig.none(),
   });

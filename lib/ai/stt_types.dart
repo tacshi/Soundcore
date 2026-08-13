@@ -1,30 +1,6 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-/// Supported speech-to-text backends.
-enum SttProvider {
-  xai,
-  soniox;
-
-  String get label {
-    switch (this) {
-      case SttProvider.xai:
-        return 'xAI';
-      case SttProvider.soniox:
-        return 'Soniox';
-    }
-  }
-
-  String get envKeyName {
-    switch (this) {
-      case SttProvider.xai:
-        return 'XAI_API_KEY';
-      case SttProvider.soniox:
-        return 'SONIOX_API_KEY';
-    }
-  }
-}
-
 enum SttDisplayMode { transcription, translation, conversation }
 
 enum SonioxTranslationKind { none, oneWay, twoWay }
@@ -307,14 +283,12 @@ class SttResult {
     this.durationSec,
     this.language,
     this.sourcePath,
-    this.provider,
   });
 
   final String text;
   final double? durationSec;
   final String? language;
   final String? sourcePath;
-  final SttProvider? provider;
 }
 
 /// Live transcript event from a streaming STT session.
@@ -341,7 +315,7 @@ class SttStreamEvent {
   final SttSourceChunk? pendingTranslationSource;
 }
 
-/// Common interface for PCM16 LE streaming STT (xAI WS / Soniox WS).
+/// Common interface for PCM16 LE streaming STT.
 abstract class SttStreamSession {
   Stream<SttStreamEvent> get events;
   bool get isOpen;

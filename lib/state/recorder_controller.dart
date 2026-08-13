@@ -12,8 +12,6 @@ import '../ai/soniox_stt.dart';
 import '../ai/soniox_stt_stream.dart';
 import '../ai/soniox_languages.dart';
 import '../ai/stt_types.dart';
-import '../ai/xai_stt.dart';
-import '../ai/xai_stt_stream.dart';
 import '../audio/audio_duration.dart';
 import '../audio/ogg_opus.dart';
 import '../audio/opus_pcm_decoder.dart';
@@ -176,7 +174,6 @@ class RecorderController extends ChangeNotifier {
 
   Future<void> _loadPersistedSettings() async {
     final s = await AppSettingsStore.load();
-    if (s.xaiApiKey != null) _xaiStt.apiKeyOverride = s.xaiApiKey;
     if (s.sonioxApiKey != null) _sonioxStt.apiKeyOverride = s.sonioxApiKey;
     autoTranscribe = s.autoTranscribe;
     autoRealtime = s.autoRealtime;
@@ -194,32 +191,14 @@ class RecorderController extends ChangeNotifier {
       ownerLanguage = 'zh';
       guestLanguage = 'en';
     }
-    // Prefer saved provider when its key is available; else pick configured one.
-    final xai = _xaiStt.isConfigured;
-    final soniox = _sonioxStt.isConfigured;
-    if (s.sttProvider == SttProvider.soniox && soniox) {
-      sttProvider = SttProvider.soniox;
-    } else if (s.sttProvider == SttProvider.xai && xai) {
-      sttProvider = SttProvider.xai;
-    } else if (soniox && !xai) {
-      sttProvider = SttProvider.soniox;
-    } else if (xai && !soniox) {
-      sttProvider = SttProvider.xai;
-    } else {
-      sttProvider = SttProvider.soniox;
-    }
-    sttMode = autoTranscribe && sttProvider == SttProvider.soniox
-        ? s.sttMode
-        : SttDisplayMode.transcription;
+    sttMode = autoTranscribe ? s.sttMode : SttDisplayMode.transcription;
     notifyListeners();
   }
 
   Future<void> _persistSettings() async {
     await AppSettingsStore.save(
       AppSettings(
-        xaiApiKey: _xaiStt.apiKeyOverride,
         sonioxApiKey: _sonioxStt.apiKeyOverride,
-        sttProvider: sttProvider,
         autoTranscribe: autoTranscribe,
         autoRealtime: autoRealtime,
         transcriptLanguage: transcriptLanguage,
@@ -604,19 +583,19 @@ class RecorderController extends ChangeNotifier {
       streamingSttActive = true;
       _preferStreamStt = true;
       transcriptError = null;
-      statusMessage = '实时转写已连接（${sttProvider.label} PCM 流）';
+      statusMessage = '实时转写已连接（Soniox PCM 流）';
       _flushPendingPcm();
       notifyListeners();
       return true;
     } catch (e) {
       if (revision != _sttLifecycleRevision) return false;
-      debugPrint('[STT] stream start failed (${sttProvider.label}): $e');
+      debugPrint('[STT] Soniox stream start failed: $e');
       streamingSttActive = false;
       _preferStreamStt = false;
       _pendingPcm.clear();
       transcriptError = sonioxTranslationModeActive
           ? '$_activeTranslationModeLabel连接失败：$e'
-          : '实时转写连接失败（${sttProvider.label}），将回退批量转写：$e';
+          : '实时转写连接失败（Soniox），将回退批量转写：$e';
       if (identical(_sttStream, session)) _sttStream = null;
       if (identical(_sttStreamSub, subscription)) _sttStreamSub = null;
       await subscription?.cancel();
@@ -632,36 +611,25 @@ class RecorderController extends ChangeNotifier {
   }
 
   SttStreamSession _createStreamSession(String key) {
-    switch (sttProvider) {
-      case SttProvider.soniox:
-        final communication = communicationModeActive;
-        final translationConfig = switch (sttMode) {
-          SttDisplayMode.transcription => const SonioxTranslationConfig.none(),
-          SttDisplayMode.translation => SonioxTranslationConfig.oneWay(
-            translationTargetLanguage,
-          ),
-          SttDisplayMode.conversation => SonioxTranslationConfig.twoWay(
-            ownerLanguage,
-            guestLanguage,
-          ),
-        };
-        return SonioxSttStreamSession(
-          apiKey: key,
-          sampleRate: 16000,
-          language: communication ? null : _sttLanguageParam,
-          languageHints: communication
-              ? [ownerLanguage, guestLanguage]
-              : _sonioxLanguageHints,
-          translation: translationConfig,
-        );
-      case SttProvider.xai:
-        return XaiSttStreamSession(
-          apiKey: key,
-          sampleRate: 16000,
-          language: _sttLanguageParam,
-          interimResults: true,
-        );
-    }
+    final communication = communicationModeActive;
+    final translationConfig = switch (sttMode) {
+      SttDisplayMode.transcription => const SonioxTranslationConfig.none(),
+      SttDisplayMode.translation => SonioxTranslationConfig.oneWay(
+        translationTargetLanguage,
+      ),
+      SttDisplayMode.conversation => SonioxTranslationConfig.twoWay(
+        ownerLanguage,
+        guestLanguage,
+      ),
+    };
+    return SonioxSttStreamSession(
+      apiKey: key,
+      sampleRate: 16000,
+      languageHints: communication
+          ? [ownerLanguage, guestLanguage]
+          : _sonioxLanguageHints,
+      translation: translationConfig,
+    );
   }
 
   void _flushPendingPcm() {
@@ -730,8 +698,8 @@ class RecorderController extends ChangeNotifier {
         transcribing = false;
         streamingSttActive = false;
         statusMessage = e.durationSec != null
-            ? '实时转写完成（${sttProvider.label} · ${e.durationSec!.toStringAsFixed(1)}s）'
-            : '实时转写完成（${sttProvider.label}）';
+            ? '实时转写完成（Soniox · ${e.durationSec!.toStringAsFixed(1)}s）'
+            : '实时转写完成（Soniox）';
         notifyListeners();
       case 'error':
         transcriptError = sonioxTranslationModeActive
@@ -868,8 +836,7 @@ class RecorderController extends ChangeNotifier {
   bool get isLiveSession =>
       connected && (recording || realtimeState.active || streamingSttActive);
 
-  bool get sonioxTranslationModeAvailable =>
-      autoTranscribe && sttProvider == SttProvider.soniox;
+  bool get sonioxTranslationModeAvailable => autoTranscribe;
 
   bool get translationModeActive =>
       sttMode == SttDisplayMode.translation && sonioxTranslationModeAvailable;
@@ -887,29 +854,8 @@ class RecorderController extends ChangeNotifier {
       communicationModeActive && isLiveSession;
 
   void setTranscriptLanguage(String code) {
-    transcriptLanguage = code;
-    notifyListeners();
-    unawaited(_persistSettings());
-  }
-
-  void setSttProvider(SttProvider p) {
-    if (sttProvider == p) return;
-    // Tear down live stream when switching backends mid-session.
-    unawaited(_finishStreamStt());
-    sttProvider = p;
-    if (p != SttProvider.soniox) {
-      sttMode = SttDisplayMode.transcription;
-      _resetTranslationTurns();
-    }
-    _preferStreamStt = true;
-    transcriptError = null;
-    notifyListeners();
-    unawaited(_persistSettings());
-  }
-
-  void setXaiApiKey(String? key) {
-    final t = key?.trim();
-    _xaiStt.apiKeyOverride = (t == null || t.isEmpty) ? null : t;
+    final normalized = code.trim().toLowerCase();
+    transcriptLanguage = normalized.isEmpty ? 'auto' : normalized;
     notifyListeners();
     unawaited(_persistSettings());
   }
@@ -922,29 +868,13 @@ class RecorderController extends ChangeNotifier {
   }
 
   /// Saved / override keys for Settings text fields (not env-only secrets).
-  String? get xaiApiKeyStored => _xaiStt.apiKeyOverride;
   String? get sonioxApiKeyStored => _sonioxStt.apiKeyOverride;
 
-  bool get sttConfigured {
-    switch (sttProvider) {
-      case SttProvider.xai:
-        return _xaiStt.isConfigured;
-      case SttProvider.soniox:
-        return _sonioxStt.isConfigured;
-    }
-  }
+  bool get sttConfigured => _sonioxStt.isConfigured;
 
-  bool get xaiConfigured => _xaiStt.isConfigured;
   bool get sonioxConfigured => _sonioxStt.isConfigured;
 
-  String? get _activeSttApiKey {
-    switch (sttProvider) {
-      case SttProvider.xai:
-        return _xaiStt.apiKey;
-      case SttProvider.soniox:
-        return _sonioxStt.apiKey;
-    }
-  }
+  String? get _activeSttApiKey => _sonioxStt.apiKey;
 
   void clearTranscript() {
     transcript = '';
@@ -1050,8 +980,7 @@ class RecorderController extends ChangeNotifier {
   /// Transcribe a finished local export (manual).
   Future<void> transcribeLocalFile(String path) async {
     if (!sttConfigured) {
-      transcriptError =
-          '未配置 ${sttProvider.envKeyName}（export ${sttProvider.envKeyName}=…）';
+      transcriptError = '未配置 SONIOX_API_KEY（export SONIOX_API_KEY=…）';
       notifyListeners();
       return;
     }
@@ -1093,7 +1022,7 @@ class RecorderController extends ChangeNotifier {
         rememberTranscript(path, r.text);
       }
       statusMessage =
-          '转写完成（${sttProvider.label} · ${r.durationSec?.toStringAsFixed(1) ?? "?"}s）';
+          '转写完成（Soniox · ${r.durationSec?.toStringAsFixed(1) ?? "?"}s）';
     } catch (e) {
       transcriptError = '$e';
     } finally {
@@ -1108,62 +1037,18 @@ class RecorderController extends ChangeNotifier {
     String path, {
     SttFileProgressCallback? onProgress,
   }) {
-    switch (sttProvider) {
-      case SttProvider.xai:
-        return _xaiStt.transcribePath(
-          path,
-          language: _sttLanguageParam,
-          onProgress: onProgress,
-        );
-      case SttProvider.soniox:
-        return _sonioxStt.transcribePath(
-          path,
-          language: transcriptLanguage.toLowerCase(),
-          onProgress: onProgress,
-        );
-    }
-  }
-
-  String? get _sttLanguageParam {
-    // xAI format=true requires a supported code; zh not listed — omit format.
-    const supported = {
-      'ar',
-      'cs',
-      'da',
-      'nl',
-      'en',
-      'fil',
-      'fr',
-      'de',
-      'hi',
-      'id',
-      'it',
-      'ja',
-      'ko',
-      'mk',
-      'ms',
-      'fa',
-      'pl',
-      'pt',
-      'ro',
-      'ru',
-      'es',
-      'sv',
-      'th',
-      'tr',
-      'vi',
-    };
-    final c = transcriptLanguage.toLowerCase();
-    if (supported.contains(c)) return c;
-    // Chinese / others: still send file without format flag (model detects speech).
-    return null;
+    final language = transcriptLanguage.toLowerCase();
+    return _sonioxStt.transcribePath(
+      path,
+      language: language == 'auto' ? null : language,
+      onProgress: onProgress,
+    );
   }
 
   List<String> get _sonioxLanguageHints {
     final c = transcriptLanguage.toLowerCase();
-    if (c == 'zh' || c.startsWith('zh')) return const ['zh', 'en'];
-    if (c.isEmpty) return const ['zh', 'en'];
-    return [c, 'en'];
+    if (c.isEmpty || c == 'auto') return const [];
+    return [c];
   }
 
   Future<void> _maybeTranscribeRolling(
@@ -1295,10 +1180,7 @@ class RecorderController extends ChangeNotifier {
   /// Near-realtime AI transcription (PCM WS stream + Ogg batch fallback).
   bool autoTranscribe = true;
 
-  /// Active STT backend (xAI or Soniox).
-  SttProvider sttProvider = SttProvider.soniox;
-  String transcriptLanguage =
-      'zh'; // formatting hint; zh may fall back if unsupported
+  String transcriptLanguage = 'auto';
   SttDisplayMode sttMode = SttDisplayMode.transcription;
   String translationTargetLanguage = 'zh';
   String ownerLanguage = 'zh';
@@ -1319,7 +1201,6 @@ class RecorderController extends ChangeNotifier {
 
   /// Decoded Opus frames in the current session (diagnostics).
   int pcmFramesDecoded = 0;
-  final XaiSttService _xaiStt = XaiSttService();
   final SonioxSttService _sonioxStt = SonioxSttService();
   final OpusPcmDecoder _opusPcm = OpusPcmDecoder(outputSampleRate: 16000);
   SttStreamSession? _sttStream;
@@ -3166,7 +3047,6 @@ class RecorderController extends ChangeNotifier {
     _opusPcm.dispose();
     unawaited(_player.dispose());
     unawaited(_realtime.dispose());
-    _xaiStt.dispose();
     _sonioxStt.dispose();
     _wifi.dispose();
     _ble.dispose();

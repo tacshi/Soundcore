@@ -14,7 +14,7 @@
 
 - **首页**：空闲时浏览本地与设备端录音；录音期间切换为无卡片、无底部导航的 AI 实时转写，只保留实时状态与暂停控制，并始终跟随最新文字
 - **设备**：电量（耳机 + 充电盒）、录音控制、配对绑定 / 解绑、恢复出厂设置
-- **设置**：STT 服务商（xAI / Soniox）切换、语言提示、自动转写开关、API Key 管理、诊断日志
+- **设置**：Soniox 语言提示、自动转写开关、API Key 管理、诊断日志
 - **扫描**：首页顶部按钮触发底部弹窗（非独立 Tab）搜索并连接 BLE 设备
 - **Wi‑Fi 批量导出**：SoftAP 直连 + AES 解密，导出文件本地播放
 - **iPhone 操作按钮**：从锁屏或其他 App 打开本应用，并让已绑定的 D3200 立即开始录音
@@ -33,7 +33,7 @@
 
 ```
 lib/
-├── ai/          # xAI / Soniox STT（实时流式 + 批量文件）
+├── ai/          # Soniox STT（实时流式 + 批量文件）
 ├── audio/       # Ogg/Opus 封装、Opus→PCM 解码
 ├── ble/         # 扫描广播解析、GATT 服务、离线文件拉取、实时音频流
 ├── crypto/      # 设备端 ECDH / AES 会话加解密
@@ -82,10 +82,10 @@ flutter test
 
 ## 说明
 
-- **AI 转写**（可选）：在转写面板中选择 **xAI** 或 **Soniox**。
+- **AI 转写**（可选）：使用 **Soniox** 实时或批量生成转写。
   - 实时路径：BLE Opus → PCM16 → 对应服务商 WebSocket STT。
-  - 批量路径：上传 Ogg 文件（xAI multipart / Soniox 异步 Files API）。
-  - Key 配置：`export XAI_API_KEY=…` 和/或 `export SONIOX_API_KEY=…` 后重启 App，或在设置页粘贴保存。
+  - 批量路径：通过 Soniox 异步 Files API 上传 Ogg 文件。
+  - Key 配置：`export SONIOX_API_KEY=…` 后重启 App，或在设置页粘贴保存。
 - **Wi‑Fi SoftAP 批量导出 + 解密**：BLE 连接后先做 ECDH 握手（`0x2E/0x01`）生成会话密钥；导出时打开设备 SoftAP → 加入 → WebSocket 拉取，每 160 字节分片用 `1A07` 头（`soundcored3200` magic）中的单文件密钥做 AES‑CTR 解密。导出文件保存在 `Documents/AnkerRecorder/exports` 下，命名为 `{fileId}.opus`（握手失败则为 `.opus.bin`）。本地**播放**使用 `just_audio` 播放已导出文件。
 - 设备协议细节（服务/特征 UUID、命令字、加密流程等）见 [`PROTOCOL.md`](PROTOCOL.md)。
 - 请保持蓝牙开启；旧版 Android 扫描需授予定位权限。

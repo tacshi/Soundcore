@@ -236,7 +236,7 @@ class _LiveSessionViewState extends State<_LiveSessionView> {
         else if (!c.sttConfigured)
           _InlineNotice(
             icon: Icons.key_off_rounded,
-            text: '请在「设置」中配置 ${c.sttProvider.envKeyName}',
+            text: '请在「设置」中配置 SONIOX_API_KEY',
             color: AppColors.amber,
           ),
         if (c.transcriptError != null)
@@ -308,7 +308,7 @@ class _TranscriptToolbar extends StatelessWidget {
     final live = c.recording || c.realtimeState.active || c.streamingSttActive;
     final title = c.translationModeActive
         ? '${c.streamingSttActive ? '翻译中' : '即时翻译'} · ${targetLanguage.name}'
-        : '${c.streamingSttActive ? '实时转写' : '即时转写'} · ${c.sttProvider.label}';
+        : '${c.streamingSttActive ? '实时转写' : '即时转写'} · Soniox';
     return DecoratedBox(
       decoration: const BoxDecoration(
         color: AppColors.bgElevated,

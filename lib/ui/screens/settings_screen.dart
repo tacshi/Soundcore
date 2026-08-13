@@ -7,7 +7,7 @@ import '../../state/recorder_controller.dart';
 import '../../theme/app_theme.dart';
 import '../widgets/widgets.dart';
 
-/// App preferences: STT providers, streaming, BLE, diagnostics.
+/// App preferences: Soniox STT, streaming, BLE, and diagnostics.
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
@@ -46,71 +46,16 @@ class SettingsScreen extends StatelessWidget {
                     onChanged: c.setAutoTranscribe,
                   ),
                   const Divider(height: 20),
-                  const Text(
-                    '服务商',
-                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                  _ApiKeyField(
+                    key: const ValueKey('apikey-soniox'),
+                    label: 'Soniox API Key',
+                    envName: 'SONIOX_API_KEY',
+                    initialValue: c.sonioxApiKeyStored ?? '',
+                    configured: c.sonioxConfigured,
+                    onSave: c.setSonioxApiKey,
                   ),
-                  const SizedBox(height: 10),
-                  _ProviderSelector(controller: c),
                   const SizedBox(height: 14),
-                  // Only the selected provider’s key field (bound 1:1).
-                  if (c.sttProvider == SttProvider.xai)
-                    _ApiKeyField(
-                      key: const ValueKey('apikey-xai'),
-                      label: 'xAI API Key',
-                      envName: 'XAI_API_KEY',
-                      initialValue: c.xaiApiKeyStored ?? '',
-                      configured: c.xaiConfigured,
-                      onSave: c.setXaiApiKey,
-                    )
-                  else
-                    _ApiKeyField(
-                      key: const ValueKey('apikey-soniox'),
-                      label: 'Soniox API Key',
-                      envName: 'SONIOX_API_KEY',
-                      initialValue: c.sonioxApiKeyStored ?? '',
-                      configured: c.sonioxConfigured,
-                      onSave: c.setSonioxApiKey,
-                    ),
-                  const SizedBox(height: 14),
-                  const Text(
-                    '语言提示',
-                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final e in const [
-                        ('zh', '中文'),
-                        ('en', 'English'),
-                        ('ja', '日本語'),
-                        ('ko', '한국어'),
-                      ])
-                        ChoiceChip(
-                          label: Text(e.$2),
-                          selected: c.transcriptLanguage == e.$1,
-                          onSelected: (_) => c.setTranscriptLanguage(e.$1),
-                          selectedColor: AppColors.accentSoft,
-                          showCheckmark: false,
-                          visualDensity: VisualDensity.compact,
-                          materialTapTargetSize:
-                              MaterialTapTargetSize.shrinkWrap,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 6,
-                          ),
-                          labelStyle: TextStyle(
-                            color: c.transcriptLanguage == e.$1
-                                ? AppColors.accent
-                                : AppColors.textSecondary,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 12,
-                          ),
-                        ),
-                    ],
-                  ),
+                  _TranscriptLanguageSelector(controller: c),
                   const Divider(height: 28),
                   _SttModeSelector(controller: c),
                   if (c.sttMode == SttDisplayMode.translation) ...[
@@ -150,6 +95,61 @@ class _SettingsGroup extends StatelessWidget {
   }
 }
 
+class _TranscriptLanguageSelector extends StatelessWidget {
+  const _TranscriptLanguageSelector({required this.controller});
+
+  static const _languages = [
+    ('auto', '自动'),
+    ('zh', '中文'),
+    ('en', 'English'),
+    ('ja', '日本語'),
+    ('ko', '한국어'),
+  ];
+
+  final RecorderController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected =
+        _languages.any(
+          (language) => language.$1 == controller.transcriptLanguage,
+        )
+        ? controller.transcriptLanguage
+        : 'auto';
+    return Row(
+      children: [
+        const Expanded(
+          child: Text(
+            '语言提示',
+            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+          ),
+        ),
+        DropdownButtonHideUnderline(
+          child: DropdownButton<String>(
+            key: const ValueKey('transcript-language-selector'),
+            value: selected,
+            isDense: true,
+            borderRadius: BorderRadius.circular(10),
+            icon: const Icon(Icons.expand_more_rounded, size: 18),
+            style: const TextStyle(
+              color: AppColors.textPrimary,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+            items: [
+              for (final language in _languages)
+                DropdownMenuItem(value: language.$1, child: Text(language.$2)),
+            ],
+            onChanged: (value) {
+              if (value != null) controller.setTranscriptLanguage(value);
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _SttModeSelector extends StatelessWidget {
   const _SttModeSelector({required this.controller});
 
@@ -158,11 +158,7 @@ class _SttModeSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = controller;
-    final subtitle = c.sttProvider != SttProvider.soniox
-        ? '翻译和交流模式仅支持 Soniox'
-        : !c.autoTranscribe
-        ? '请先开启自动转写'
-        : '翻译为单向翻译，交流为面对面双向翻译';
+    final subtitle = !c.autoTranscribe ? '请先开启自动转写' : '翻译为单向翻译，交流为面对面双向翻译';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -462,101 +458,6 @@ class _LanguagePickerSheetState extends State<_LanguagePickerSheet> {
           ),
         ],
       ),
-    );
-  }
-}
-
-/// Provider picker: dropdown when multiple keys exist; segmented otherwise.
-class _ProviderSelector extends StatelessWidget {
-  const _ProviderSelector({required this.controller});
-
-  final RecorderController controller;
-
-  String _statusLabel(SttProvider p, RecorderController c) {
-    final ok = p == SttProvider.xai ? c.xaiConfigured : c.sonioxConfigured;
-    return ok ? '${p.label} · 已配置' : '${p.label} · 未配置';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final c = controller;
-    final multiConfigured = c.xaiConfigured && c.sonioxConfigured;
-
-    if (multiConfigured) {
-      // Both keys ready → dropdown chooses which backend is active.
-      // Still shows that provider’s key field below for review/edit.
-      final options = const [SttProvider.soniox, SttProvider.xai]
-          .where(
-            (p) =>
-                (p == SttProvider.xai && c.xaiConfigured) ||
-                (p == SttProvider.soniox && c.sonioxConfigured),
-          )
-          .toList();
-      final selected = options.contains(c.sttProvider)
-          ? c.sttProvider
-          : options.first;
-
-      return DropdownButtonFormField<SttProvider>(
-        // Controlled by parent; key forces rebuild when selection changes.
-        key: ValueKey('provider-$selected'),
-        initialValue: selected,
-        decoration: InputDecoration(
-          isDense: true,
-          labelText: '当前使用的服务商',
-          filled: true,
-          fillColor: AppColors.bgElevated,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 10,
-          ),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: AppColors.border),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: AppColors.border),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: const BorderSide(color: AppColors.accent, width: 1.4),
-          ),
-        ),
-        items: [
-          for (final p in options)
-            DropdownMenuItem(value: p, child: Text(_statusLabel(p, c))),
-        ],
-        onChanged: (p) {
-          if (p != null) c.setSttProvider(p);
-        },
-      );
-    }
-
-    // 0–1 keys: segmented control to pick which provider to configure / use.
-    return SegmentedButton<SttProvider>(
-      segments: [
-        for (final p in const [SttProvider.soniox, SttProvider.xai])
-          ButtonSegment(
-            value: p,
-            label: Text(
-              p == SttProvider.xai
-                  ? (c.xaiConfigured ? 'xAI' : 'xAI 未配置')
-                  : (c.sonioxConfigured ? 'Soniox' : 'Soniox 未配置'),
-              style: const TextStyle(fontSize: 12),
-            ),
-            icon: Icon(
-              (p == SttProvider.xai ? c.xaiConfigured : c.sonioxConfigured)
-                  ? Icons.check_circle
-                  : Icons.key_off_outlined,
-              size: 16,
-            ),
-          ),
-      ],
-      selected: {c.sttProvider},
-      onSelectionChanged: (s) {
-        if (s.isNotEmpty) c.setSttProvider(s.first);
-      },
-      showSelectedIcon: false,
     );
   }
 }
