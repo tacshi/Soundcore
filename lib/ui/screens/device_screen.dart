@@ -182,32 +182,7 @@ class DeviceScreen extends StatelessWidget {
                       fontSize: 12,
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
-                    title: const Text(
-                      '绑定后播报（实验）',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    subtitle: Text(
-                      c.bindBroadcastTone
-                          ? 'TX 0x0B/0x87 payload = 01 01'
-                          : 'TX 0x0B/0x87 payload = 01',
-                      style: const TextStyle(
-                        color: AppColors.textMuted,
-                        fontSize: 11,
-                      ),
-                    ),
-                    value: c.bindBroadcastTone,
-                    onChanged: c.phase == AppPhase.busy
-                        ? null
-                        : c.setBindBroadcastTone,
-                  ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 12),
                   Row(
                     children: [
                       Expanded(

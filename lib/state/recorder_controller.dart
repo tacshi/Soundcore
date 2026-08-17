@@ -2518,23 +2518,9 @@ class RecorderController extends ChangeNotifier {
     });
   }
 
-  /// When true, bind TX includes experimental 2nd byte `01` (post-bind 播报?).
-  /// Feishu never sets this; firmware may ignore it.
-  bool bindBroadcastTone = false;
-
-  void setBindBroadcastTone(bool value) {
-    if (bindBroadcastTone == value) return;
-    bindBroadcastTone = value;
-    notifyListeners();
-  }
-
-  Future<void> bindDevice({bool? broadcastTone}) async {
-    final tone = broadcastTone ?? bindBroadcastTone;
+  Future<void> bindDevice() async {
     _pendingBindRequest = true;
-    await _send(
-      DeviceCommands.bind(broadcastTone: tone),
-      label: tone ? '正在绑定（含播报标志）…' : '正在绑定…',
-    );
+    await _send(DeviceCommands.bind(), label: '正在绑定…');
   }
 
   /// Unbind with the stock Feishu payload. This preserves recordings and

@@ -353,6 +353,7 @@ void main() {
     ]) {
       expect(find.byKey(ValueKey(key)), findsOneWidget);
     }
+    expect(find.text('绑定后播报（实验）'), findsNothing);
     expect(find.byType(SurfaceCard), findsNothing);
   });
 

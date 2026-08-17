@@ -107,30 +107,15 @@ class DeviceCommands {
   // ── Binding (type 0x0B) ──────────────────────────────────────────────
   /// Feishu/Anker SDK sends `01` to bind and `00` to unbind. Unbind always
   /// uses the stock one-byte payload so recordings remain on the device.
-  ///
-  /// The optional bind byte is retained for experimental post-bind prompts.
-  static Uint8List bind({bool broadcastTone = false}) {
-    final payload = <int>[0x01];
-    if (broadcastTone) payload.add(0x01);
-    return ProtocolFrame.encode(
-      cmdType: 0x0B,
-      cmdId: 0x87,
-      payload: payload,
-    );
-  }
+  static Uint8List bind() =>
+      ProtocolFrame.encode(cmdType: 0x0B, cmdId: 0x87, payload: const [0x01]);
 
-  static Uint8List unbind() => ProtocolFrame.encode(
-    cmdType: 0x0B,
-    cmdId: 0x87,
-    payload: const [0x00],
-  );
+  static Uint8List unbind() =>
+      ProtocolFrame.encode(cmdType: 0x0B, cmdId: 0x87, payload: const [0x00]);
 
   /// Raw multi-byte bind/unbind for ad-hoc probes (any payload after op).
-  static Uint8List bindRaw(List<int> payload) => ProtocolFrame.encode(
-        cmdType: 0x0B,
-        cmdId: 0x87,
-        payload: payload,
-      );
+  static Uint8List bindRaw(List<int> payload) =>
+      ProtocolFrame.encode(cmdType: 0x0B, cmdId: 0x87, payload: payload);
 
   // ── More settings (type 0x10) ────────────────────────────────────────
   static Uint8List setFindMy(bool enable) => ProtocolFrame.encode(
