@@ -5,6 +5,13 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+typedef TranscriptStoreData = ({
+  Map<String, String> byPath,
+  Map<int, String> byFileId,
+  Map<String, Map<String, String>> aliasesByPath,
+  Map<int, Map<String, String>> aliasesByFileId,
+});
+
 /// Persists completed per-recording transcripts on the app device.
 class TranscriptStore {
   TranscriptStore._();
@@ -24,67 +31,142 @@ class TranscriptStore {
     return File(p.join(dir.path, _fileName));
   }
 
-  static Future<({Map<String, String> byPath, Map<int, String> byFileId})>
-  load() async {
+  static TranscriptStoreData _emptyData() => (
+    byPath: <String, String>{},
+    byFileId: <int, String>{},
+    aliasesByPath: <String, Map<String, String>>{},
+    aliasesByFileId: <int, Map<String, String>>{},
+  );
+
+  static Future<TranscriptStoreData> load() async {
     try {
       final file = await _file();
-      if (!await file.exists()) {
-        return (byPath: <String, String>{}, byFileId: <int, String>{});
-      }
+      if (!await file.exists()) return _emptyData();
       final json = jsonDecode(await file.readAsString());
-      if (json is! Map) {
-        return (byPath: <String, String>{}, byFileId: <int, String>{});
-      }
-
-      final byPath = <String, String>{};
-      final paths = json['byPath'];
-      if (paths is Map) {
-        for (final entry in paths.entries) {
-          final text = entry.value;
-          if (text is String && text.isNotEmpty) {
-            byPath['${entry.key}'] = text;
-          }
-        }
-      }
-
-      final byFileId = <int, String>{};
-      final ids = json['byFileId'];
-      if (ids is Map) {
-        for (final entry in ids.entries) {
-          final id = int.tryParse('${entry.key}');
-          final text = entry.value;
-          if (id != null && text is String && text.isNotEmpty) {
-            byFileId[id] = text;
-          }
-        }
-      }
-      return (byPath: byPath, byFileId: byFileId);
+      return decode(json);
     } catch (e) {
       debugPrint('[TranscriptStore] load failed: $e');
-      return (byPath: <String, String>{}, byFileId: <int, String>{});
+      return _emptyData();
     }
+  }
+
+  @visibleForTesting
+  static TranscriptStoreData decode(Object? json) {
+    if (json is! Map) return _emptyData();
+
+    final byPath = <String, String>{};
+    final paths = json['byPath'];
+    if (paths is Map) {
+      for (final entry in paths.entries) {
+        final text = entry.value;
+        if (text is String && text.isNotEmpty) {
+          byPath['${entry.key}'] = text;
+        }
+      }
+    }
+
+    final byFileId = <int, String>{};
+    final ids = json['byFileId'];
+    if (ids is Map) {
+      for (final entry in ids.entries) {
+        final id = int.tryParse('${entry.key}');
+        final text = entry.value;
+        if (id != null && text is String && text.isNotEmpty) {
+          byFileId[id] = text;
+        }
+      }
+    }
+
+    final aliasesByPath = _decodeAliases<String>(
+      json['aliasesByPath'],
+      (key) => '$key',
+    );
+    final aliasesByFileId = _decodeAliases<int>(
+      json['aliasesByFileId'],
+      (key) => int.tryParse('$key'),
+    );
+    return (
+      byPath: byPath,
+      byFileId: byFileId,
+      aliasesByPath: aliasesByPath,
+      aliasesByFileId: aliasesByFileId,
+    );
+  }
+
+  static Map<K, Map<String, String>> _decodeAliases<K>(
+    Object? json,
+    K? Function(Object? key) parseKey,
+  ) {
+    final decoded = <K, Map<String, String>>{};
+    if (json is! Map) return decoded;
+    for (final entry in json.entries) {
+      final key = parseKey(entry.key);
+      final rawAliases = entry.value;
+      if (key == null || rawAliases is! Map) continue;
+      final aliases = <String, String>{};
+      for (final aliasEntry in rawAliases.entries) {
+        final id = '${aliasEntry.key}'.trim();
+        final alias = aliasEntry.value;
+        if (id.isNotEmpty && alias is String && alias.trim().isNotEmpty) {
+          aliases[id] = alias.trim();
+        }
+      }
+      if (aliases.isNotEmpty) decoded[key] = aliases;
+    }
+    return decoded;
   }
 
   static Future<void> save({
     required Map<String, String> byPath,
     required Map<int, String> byFileId,
+    required Map<String, Map<String, String>> aliasesByPath,
+    required Map<int, Map<String, String>> aliasesByFileId,
   }) {
     final paths = Map<String, String>.from(byPath);
     final ids = Map<int, String>.from(byFileId);
-    _pendingSave = _pendingSave.then((_) => _write(paths, ids));
+    final pathAliases = _copyAliases(aliasesByPath);
+    final idAliases = _copyAliases(aliasesByFileId);
+    _pendingSave = _pendingSave.then(
+      (_) => _write(paths, ids, pathAliases, idAliases),
+    );
     return _pendingSave;
   }
+
+  static Map<K, Map<String, String>> _copyAliases<K>(
+    Map<K, Map<String, String>> source,
+  ) => source.map(
+    (key, aliases) => MapEntry(key, Map<String, String>.from(aliases)),
+  );
+
+  @visibleForTesting
+  static Map<String, dynamic> encode({
+    required Map<String, String> byPath,
+    required Map<int, String> byFileId,
+    required Map<String, Map<String, String>> aliasesByPath,
+    required Map<int, Map<String, String>> aliasesByFileId,
+  }) => <String, dynamic>{
+    'byPath': byPath,
+    'byFileId': byFileId.map((id, text) => MapEntry('$id', text)),
+    'aliasesByPath': aliasesByPath,
+    'aliasesByFileId': aliasesByFileId.map(
+      (id, aliases) => MapEntry('$id', aliases),
+    ),
+  };
 
   static Future<void> _write(
     Map<String, String> byPath,
     Map<int, String> byFileId,
+    Map<String, Map<String, String>> aliasesByPath,
+    Map<int, Map<String, String>> aliasesByFileId,
   ) async {
     try {
       final file = await _file();
-      final json = <String, dynamic>{
-        'byPath': byPath,
-        'byFileId': byFileId.map((id, text) => MapEntry('$id', text)),
-      };
+      final json = encode(
+        byPath: byPath,
+        byFileId: byFileId,
+        aliasesByPath: aliasesByPath,
+        aliasesByFileId: aliasesByFileId,
+      );
       final temporary = File('${file.path}.tmp');
       await temporary.writeAsString(
         const JsonEncoder.withIndent('  ').convert(json),

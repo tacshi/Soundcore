@@ -64,6 +64,61 @@ class SttFileProgress {
 
 typedef SttFileProgressCallback = void Function(SttFileProgress progress);
 
+/// One diarized speaker found in a completed transcript.
+class TranscriptSpeaker {
+  const TranscriptSpeaker({
+    required this.id,
+    required this.defaultLabel,
+    required this.displayLabel,
+  });
+
+  /// Provider-assigned identifier, scoped to one recording.
+  final String id;
+  final String defaultLabel;
+  final String displayLabel;
+}
+
+final RegExp _transcriptSpeakerPrefix = RegExp(
+  r'^说话人\s+([^：\r\n]+)：',
+  multiLine: true,
+);
+
+/// Extract diarized speakers in first-appearance order.
+List<TranscriptSpeaker> extractTranscriptSpeakers(
+  String transcript, {
+  Map<String, String> aliases = const {},
+}) {
+  final seen = <String>{};
+  final speakers = <TranscriptSpeaker>[];
+  for (final match in _transcriptSpeakerPrefix.allMatches(transcript)) {
+    final id = match.group(1)!.trim();
+    if (id.isEmpty || !seen.add(id)) continue;
+    final defaultLabel = '说话人 $id';
+    final alias = aliases[id]?.trim();
+    speakers.add(
+      TranscriptSpeaker(
+        id: id,
+        defaultLabel: defaultLabel,
+        displayLabel: alias == null || alias.isEmpty ? defaultLabel : alias,
+      ),
+    );
+  }
+  return speakers;
+}
+
+/// Apply recording-specific aliases only to canonical line-start prefixes.
+String applyTranscriptSpeakerAliases(
+  String transcript,
+  Map<String, String> aliases,
+) {
+  if (transcript.isEmpty || aliases.isEmpty) return transcript;
+  return transcript.replaceAllMapped(_transcriptSpeakerPrefix, (match) {
+    final id = match.group(1)!.trim();
+    final alias = aliases[id]?.trim();
+    return alias == null || alias.isEmpty ? match.group(0)! : '$alias：';
+  });
+}
+
 /// Normalize provider-specific markers in transcript text.
 ///
 /// Soniox endpoint detection emits `<end>` tokens; convert those to newlines

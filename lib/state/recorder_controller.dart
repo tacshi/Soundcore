@@ -422,6 +422,18 @@ class RecorderController extends ChangeNotifier {
     for (final entry in saved.byFileId.entries) {
       transcriptsByFileId.putIfAbsent(entry.key, () => entry.value);
     }
+    for (final entry in saved.aliasesByPath.entries) {
+      speakerAliasesByPath.putIfAbsent(
+        entry.key,
+        () => Map<String, String>.from(entry.value),
+      );
+    }
+    for (final entry in saved.aliasesByFileId.entries) {
+      speakerAliasesByFileId.putIfAbsent(
+        entry.key,
+        () => Map<String, String>.from(entry.value),
+      );
+    }
     notifyListeners();
   }
 
@@ -430,6 +442,8 @@ class RecorderController extends ChangeNotifier {
     await TranscriptStore.save(
       byPath: transcriptsByPath,
       byFileId: transcriptsByFileId,
+      aliasesByPath: speakerAliasesByPath,
+      aliasesByFileId: speakerAliasesByFileId,
     );
   }
 
@@ -481,6 +495,7 @@ class RecorderController extends ChangeNotifier {
   void rememberTranscript(String path, String text) {
     final t = normalizeSttText(text);
     if (path.isEmpty || t.isEmpty) return;
+    _clearSpeakerAliases(path);
     transcriptsByPath[path] = t;
     // Also index by file id when known.
     final id = fileIdFromPath(path);
@@ -489,6 +504,15 @@ class RecorderController extends ChangeNotifier {
   }
 
   String? transcriptForPath(String path) {
+    final raw = _rawTranscriptForPath(path);
+    if (raw == null) return null;
+    return applyTranscriptSpeakerAliases(
+      normalizeSttText(raw),
+      _speakerAliasesForPath(path),
+    );
+  }
+
+  String? _rawTranscriptForPath(String path) {
     final direct = transcriptsByPath[path];
     if (direct != null && direct.isNotEmpty) return direct;
     final id = fileIdFromPath(path);
@@ -509,7 +533,85 @@ class RecorderController extends ChangeNotifier {
     return null;
   }
 
-  String? transcriptForFileId(int fileId) => transcriptsByFileId[fileId];
+  String? transcriptForFileId(int fileId) {
+    final raw = transcriptsByFileId[fileId];
+    if (raw == null) return null;
+    return applyTranscriptSpeakerAliases(
+      normalizeSttText(raw),
+      speakerAliasesByFileId[fileId] ?? const {},
+    );
+  }
+
+  List<TranscriptSpeaker> transcriptSpeakersForPath(String path) {
+    final raw = _rawTranscriptForPath(path);
+    if (raw == null) return const [];
+    return extractTranscriptSpeakers(
+      normalizeSttText(raw),
+      aliases: _speakerAliasesForPath(path),
+    );
+  }
+
+  Future<void> renameTranscriptSpeaker(
+    String path,
+    String speakerId,
+    String value,
+  ) async {
+    final id = speakerId.trim();
+    final raw = _rawTranscriptForPath(path);
+    if (id.isEmpty ||
+        raw == null ||
+        !extractTranscriptSpeakers(
+          normalizeSttText(raw),
+        ).any((speaker) => speaker.id == id)) {
+      throw ArgumentError('说话人不存在');
+    }
+
+    var alias = value.trim();
+    alias = alias.replaceFirst(RegExp(r'[:：]\s*$'), '').trimRight();
+    if (alias.isEmpty) throw ArgumentError('请输入说话人姓名');
+    if (alias.runes.length > 40) throw ArgumentError('说话人姓名不能超过 40 个字符');
+
+    final defaultLabel = '说话人 $id';
+    _setSpeakerAlias(speakerAliasesByPath, path, id, alias, defaultLabel);
+    final fileId = fileIdFromPath(path);
+    if (fileId != null) {
+      _setSpeakerAlias(speakerAliasesByFileId, fileId, id, alias, defaultLabel);
+    }
+    notifyListeners();
+    await _persistTranscripts();
+  }
+
+  Map<String, String> _speakerAliasesForPath(String path) {
+    final direct = speakerAliasesByPath[path];
+    if (direct != null) return direct;
+    final id = fileIdFromPath(path);
+    return id == null ? const {} : speakerAliasesByFileId[id] ?? const {};
+  }
+
+  void _setSpeakerAlias<K>(
+    Map<K, Map<String, String>> aliasesByRecording,
+    K recording,
+    String speakerId,
+    String alias,
+    String defaultLabel,
+  ) {
+    if (alias == defaultLabel) {
+      final aliases = aliasesByRecording[recording];
+      aliases?.remove(speakerId);
+      if (aliases?.isEmpty ?? false) aliasesByRecording.remove(recording);
+      return;
+    }
+    aliasesByRecording.putIfAbsent(
+      recording,
+      () => <String, String>{},
+    )[speakerId] = alias;
+  }
+
+  void _clearSpeakerAliases(String path) {
+    speakerAliasesByPath.remove(path);
+    final id = fileIdFromPath(path);
+    if (id != null) speakerAliasesByFileId.remove(id);
+  }
 
   /// Live BLE Opus frame → PCM16 → provider WS STT (when auto-transcribe on).
   void _onRealtimeOpusFrame(Uint8List frame) {
@@ -1281,6 +1383,12 @@ class RecorderController extends ChangeNotifier {
 
   /// fileId → STT text (device list + local).
   final Map<int, String> transcriptsByFileId = {};
+
+  /// Local recording path → provider speaker id → custom display name.
+  final Map<String, Map<String, String>> speakerAliasesByPath = {};
+
+  /// Device file id → provider speaker id → custom display name.
+  final Map<int, Map<String, String>> speakerAliasesByFileId = {};
   Future<void> _transcriptsLoaded = Future<void>.value();
 
   /// Legacy expand id (device list no longer expands for playback).
@@ -2338,9 +2446,13 @@ class RecorderController extends ChangeNotifier {
           final file = File(candidate);
           if (await file.exists()) await file.delete();
           transcriptsByPath.remove(candidate);
+          speakerAliasesByPath.remove(candidate);
           _localDurations.remove(candidate);
         }
-        if (id != null) transcriptsByFileId.remove(id);
+        if (id != null) {
+          transcriptsByFileId.remove(id);
+          speakerAliasesByFileId.remove(id);
+        }
         deleted++;
       } catch (error) {
         failed.add('${p.basename(path)}: $error');
@@ -2385,6 +2497,8 @@ class RecorderController extends ChangeNotifier {
 
     final transcript = transcriptsByPath.remove(path);
     if (transcript != null) transcriptsByPath[targetPath] = transcript;
+    final aliases = speakerAliasesByPath.remove(path);
+    if (aliases != null) speakerAliasesByPath[targetPath] = aliases;
     final cachedDuration = _localDurations.remove(path);
     if (cachedDuration != null) _localDurations[targetPath] = cachedDuration;
     final renamedPaths = exportedPaths
