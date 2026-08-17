@@ -755,7 +755,7 @@ class _LocalExportCard extends StatelessWidget {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('重新转写？'),
-        content: const Text('当前转写文本将被新的转写结果替换。'),
+        content: const Text('当前转写文本和自定义说话人姓名将被新的转写结果替换。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
@@ -770,6 +770,29 @@ class _LocalExportCard extends StatelessWidget {
     );
     if (confirmed == true && context.mounted) {
       await controller.transcribeLocalFile(path);
+    }
+  }
+
+  Future<void> _renameSpeaker(
+    BuildContext context,
+    RecorderController controller,
+    TranscriptSpeaker speaker,
+  ) async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (_) => _SpeakerRenameDialog(initialName: speaker.displayLabel),
+    );
+    FocusManager.instance.primaryFocus?.unfocus();
+    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+    if (name == null || !context.mounted) return;
+
+    try {
+      await controller.renameTranscriptSpeaker(path, speaker.id, name);
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('说话人重命名失败：$error')));
     }
   }
 
@@ -788,6 +811,7 @@ class _LocalExportCard extends StatelessWidget {
     final transcriptionProgress = transcribingThis
         ? c.fileTranscriptionProgress
         : null;
+    final speakers = c.transcriptSpeakersForPath(path);
 
     final backgroundColor = selected
         ? AppColors.mint.withValues(alpha: 0.08)
@@ -901,19 +925,63 @@ class _LocalExportCard extends StatelessWidget {
                 ],
                 if (hasText) ...[
                   SizedBox(height: transcriptionProgress == null ? 10 : 6),
-                  if (c.sttConfigured)
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: TextButton.icon(
-                        onPressed: c.transcribing
-                            ? null
-                            : () => _confirmRetranscribe(context, c),
-                        icon: const Icon(Icons.refresh_rounded, size: 18),
-                        label: const Text(
-                          '重新转写',
-                          style: TextStyle(fontSize: 12),
-                        ),
-                      ),
+                  if (speakers.isNotEmpty || c.sttConfigured)
+                    Row(
+                      key: ValueKey('transcript-speaker-toolbar-$path'),
+                      children: [
+                        if (speakers.isNotEmpty)
+                          Expanded(
+                            child: SingleChildScrollView(
+                              key: ValueKey('speaker-label-scroll-$path'),
+                              scrollDirection: Axis.horizontal,
+                              child: Row(
+                                children: [
+                                  for (
+                                    var index = 0;
+                                    index < speakers.length;
+                                    index++
+                                  ) ...[
+                                    if (index > 0) const SizedBox(width: 6),
+                                    ActionChip(
+                                      key: ValueKey(
+                                        'speaker-label-$path-${speakers[index].id}',
+                                      ),
+                                      label: Text(speakers[index].displayLabel),
+                                      tooltip:
+                                          '重命名${speakers[index].displayLabel}',
+                                      visualDensity: VisualDensity.compact,
+                                      materialTapTargetSize:
+                                          MaterialTapTargetSize.shrinkWrap,
+                                      onPressed: c.transcribing
+                                          ? null
+                                          : () => _renameSpeaker(
+                                              context,
+                                              c,
+                                              speakers[index],
+                                            ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          )
+                        else
+                          const Spacer(),
+                        if (speakers.isNotEmpty && c.sttConfigured)
+                          const SizedBox(width: 8),
+                        if (c.sttConfigured)
+                          TextButton.icon(
+                            key: ValueKey('retranscribe-$path'),
+                            onPressed: c.transcribing
+                                ? null
+                                : () => _confirmRetranscribe(context, c),
+                            icon: const Icon(Icons.refresh_rounded, size: 18),
+                            label: const Text(
+                              '重新转写',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ),
+                      ],
                     ),
                   const SizedBox(height: 6),
                   ConstrainedBox(
@@ -959,6 +1027,81 @@ class _LocalExportCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _SpeakerRenameDialog extends StatefulWidget {
+  const _SpeakerRenameDialog({required this.initialName});
+
+  final String initialName;
+
+  @override
+  State<_SpeakerRenameDialog> createState() => _SpeakerRenameDialogState();
+}
+
+class _SpeakerRenameDialogState extends State<_SpeakerRenameDialog> {
+  late final TextEditingController _input;
+  String? _validationError;
+
+  @override
+  void initState() {
+    super.initState();
+    _input = TextEditingController(text: widget.initialName);
+  }
+
+  @override
+  void dispose() {
+    _input.dispose();
+    super.dispose();
+  }
+
+  String _normalizeName(String value) {
+    var name = value.trim();
+    name = name.replaceFirst(RegExp(r'[:：]\s*$'), '').trimRight();
+    if (name.isEmpty) throw ArgumentError('请输入说话人姓名');
+    if (name.runes.length > 40) {
+      throw ArgumentError('说话人姓名不能超过 40 个字符');
+    }
+    return name;
+  }
+
+  void _submit(String value) {
+    try {
+      Navigator.pop(context, _normalizeName(value));
+    } on ArgumentError catch (error) {
+      setState(() => _validationError = error.message?.toString());
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('重命名说话人'),
+      content: TextField(
+        key: const ValueKey('speaker-name-input'),
+        controller: _input,
+        autofocus: true,
+        maxLength: 40,
+        decoration: InputDecoration(
+          labelText: '说话人姓名',
+          helperText: '姓名后的冒号会自动添加',
+          counterText: '',
+          errorText: _validationError,
+          isDense: true,
+        ),
+        onSubmitted: _submit,
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => _submit(_input.text),
+          child: const Text('保存'),
+        ),
+      ],
     );
   }
 }
