@@ -33,6 +33,14 @@ import 'transcript_store.dart';
 enum AppPhase { idle, scanning, connecting, ready, busy }
 
 class RecorderController extends ChangeNotifier {
+  static const _bleScanTimeout = Duration(seconds: 30);
+  static const _boundReconnectDelays = <Duration>[
+    Duration(seconds: 2),
+    Duration(seconds: 5),
+    Duration(seconds: 10),
+    Duration(seconds: 30),
+  ];
+
   RecorderController({
     BleService? ble,
     bool loadPersistedState = true,
@@ -112,10 +120,12 @@ class RecorderController extends ChangeNotifier {
           // Reconnect unexpected drops immediately, except for the expected
           // BLE→Wi-Fi handoff; that reconnect starts after transfer cleanup.
           if (bound && !_explicitDisconnect && !wifiHandoff) {
+            _resetBoundReconnectBackoff();
             unawaited(startScan());
           }
           _explicitDisconnect = false;
         } else {
+          _resetBoundReconnectBackoff();
           // Connected (or reconnected) — keep battery fresh while linked.
           // Also drop any stale "未连接"-type error a command fired mid-drop
           // (e.g. a battery poll racing the Wi‑Fi SoftAP handoff) — it no
@@ -1233,6 +1243,9 @@ class RecorderController extends ChangeNotifier {
   bool _recordingShortcutConnecting = false;
   bool _recordingShortcutStarting = false;
   Timer? _recordingShortcutTimer;
+  Timer? _scanTimeoutTimer;
+  Timer? _boundReconnectTimer;
+  int _boundReconnectAttempt = 0;
   bool get recordingShortcutPending => _recordingShortcutPending;
 
   /// Set right before a user-initiated disconnect() so the connection-state
@@ -1384,6 +1397,9 @@ class RecorderController extends ChangeNotifier {
       selectedFiles.where((f) => localPathFor(f.fileId) == null).toList();
 
   Future<void> startScan() async {
+    _boundReconnectTimer?.cancel();
+    _boundReconnectTimer = null;
+    _scanTimeoutTimer?.cancel();
     errorMessage = null;
     phase = AppPhase.scanning;
     statusMessage = '正在检查蓝牙…';
@@ -1403,10 +1419,21 @@ class RecorderController extends ChangeNotifier {
         statusMessage = '正在检查蓝牙…';
         notifyListeners();
       }
-      await _ble.startScan(timeout: const Duration(seconds: 30));
+      await _ble.startScan(timeout: _bleScanTimeout);
       statusMessage = '正在扫描 soundcore Work（D3200）…';
       notifyListeners();
+      if (!connected && phase == AppPhase.scanning) {
+        // FlutterBluePlus stops its native scan when the timeout elapses, but
+        // startScan() returns as soon as scanning begins. Mirror that timeout
+        // in controller state so the UI cannot remain stuck on a dead scan.
+        _scanTimeoutTimer = Timer(_bleScanTimeout, () {
+          if (!connected && phase == AppPhase.scanning) {
+            unawaited(_finishTimedOutScan());
+          }
+        });
+      }
     } catch (e) {
+      _scanTimeoutTimer?.cancel();
       errorMessage = e.toString().replaceFirst(
         RegExp(r'^(Bad state|Exception|StateError):\s*'),
         '',
@@ -1418,12 +1445,53 @@ class RecorderController extends ChangeNotifier {
   }
 
   Future<void> stopScan() async {
+    _boundReconnectTimer?.cancel();
+    _boundReconnectTimer = null;
+    _scanTimeoutTimer?.cancel();
     await _ble.stopScan();
     if (!connected) phase = AppPhase.idle;
     statusMessage = devices.isEmpty && adsSeen > 0
         ? '已见 $adsSeen 条 BLE 广播，无匹配 D3200 — 请重启录音豆后重试'
         : null;
     notifyListeners();
+  }
+
+  Future<void> _finishTimedOutScan() async {
+    await stopScan();
+    _scheduleBoundReconnect();
+  }
+
+  bool get _canRetryBoundConnection =>
+      bound &&
+      lastKnownDevice != null &&
+      !connected &&
+      phase == AppPhase.idle &&
+      !_ble.isConnecting &&
+      !isWifiExportSession &&
+      !isExporting &&
+      !needsWifiJoin;
+
+  void _scheduleBoundReconnect() {
+    if (!_canRetryBoundConnection || _boundReconnectTimer != null) return;
+    final index = _boundReconnectAttempt < _boundReconnectDelays.length
+        ? _boundReconnectAttempt
+        : _boundReconnectDelays.length - 1;
+    final delay = _boundReconnectDelays[index];
+    _boundReconnectAttempt++;
+    statusMessage = '未找到已绑定设备，${delay.inSeconds} 秒后自动重试…';
+    notifyListeners();
+    _boundReconnectTimer = Timer(delay, () {
+      _boundReconnectTimer = null;
+      if (_canRetryBoundConnection) {
+        unawaited(startScan());
+      }
+    });
+  }
+
+  void _resetBoundReconnectBackoff() {
+    _boundReconnectTimer?.cancel();
+    _boundReconnectTimer = null;
+    _boundReconnectAttempt = 0;
   }
 
   Future<void> connect(ScannedDevice d) async {
@@ -1440,6 +1508,7 @@ class RecorderController extends ChangeNotifier {
       _recordingShortcutTimer = null;
     }
 
+    _scanTimeoutTimer?.cancel();
     errorMessage = null;
     activeDevice = d;
     phase = AppPhase.connecting;
@@ -1508,6 +1577,7 @@ class RecorderController extends ChangeNotifier {
       if (!_ble.isConnected) {
         await BackgroundSyncService.stop();
       }
+      _scheduleBoundReconnect();
       if (_recordingShortcutPending) {
         _failRecordingShortcut(connectionError);
       } else {
@@ -1518,6 +1588,8 @@ class RecorderController extends ChangeNotifier {
 
   Future<void> disconnect() async {
     _explicitDisconnect = true;
+    _resetBoundReconnectBackoff();
+    _scanTimeoutTimer?.cancel();
     _postBindFileRefreshTimer?.cancel();
     _stopBatteryPoll();
     await _wifi.cancel();
@@ -2446,23 +2518,9 @@ class RecorderController extends ChangeNotifier {
     });
   }
 
-  /// When true, bind TX includes experimental 2nd byte `01` (post-bind 播报?).
-  /// Feishu never sets this; firmware may ignore it.
-  bool bindBroadcastTone = false;
-
-  void setBindBroadcastTone(bool value) {
-    if (bindBroadcastTone == value) return;
-    bindBroadcastTone = value;
-    notifyListeners();
-  }
-
-  Future<void> bindDevice({bool? broadcastTone}) async {
-    final tone = broadcastTone ?? bindBroadcastTone;
+  Future<void> bindDevice() async {
     _pendingBindRequest = true;
-    await _send(
-      DeviceCommands.bind(broadcastTone: tone),
-      label: tone ? '正在绑定（含播报标志）…' : '正在绑定…',
-    );
+    await _send(DeviceCommands.bind(), label: '正在绑定…');
   }
 
   /// Unbind with the stock Feishu payload. This preserves recordings and
@@ -3038,6 +3096,8 @@ class RecorderController extends ChangeNotifier {
     _postBindFileRefreshTimer?.cancel();
     _fileListPageTimeout?.cancel();
     _recordingShortcutTimer?.cancel();
+    _scanTimeoutTimer?.cancel();
+    _boundReconnectTimer?.cancel();
     _stopBatteryPoll();
     for (final s in _subs) {
       s.cancel();

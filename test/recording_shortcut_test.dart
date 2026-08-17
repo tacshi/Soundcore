@@ -11,6 +11,47 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  testWidgets('expired scan returns to idle so it can be retried', (
+    tester,
+  ) async {
+    final ble = _FakeBleService();
+    final controller = _controller(ble);
+    _disposeAfterSettling(controller);
+
+    await controller.startScan();
+    expect(controller.phase, AppPhase.scanning);
+
+    await tester.pump(const Duration(seconds: 31));
+
+    expect(controller.phase, AppPhase.idle);
+    expect(ble.stopScanCalls, 1);
+
+    await controller.startScan();
+    expect(ble.startScanCalls, 2);
+    await controller.stopScan();
+  });
+
+  testWidgets('bound recorder keeps retrying after a scan timeout', (
+    tester,
+  ) async {
+    final ble = _FakeBleService();
+    final controller = _controller(ble)
+      ..bound = true
+      ..lastKnownDevice = _device
+      ..activeDevice = _device;
+    _disposeAfterSettling(controller);
+
+    await controller.startScan();
+    await tester.pump(const Duration(seconds: 31));
+    expect(controller.phase, AppPhase.idle);
+
+    await tester.pump(const Duration(seconds: 3));
+
+    expect(controller.phase, AppPhase.scanning);
+    expect(ble.startScanCalls, 2);
+    await controller.stopScan();
+  });
+
   group('recording shortcut', () {
     test('connected recorder starts exactly once', () async {
       final ble = _FakeBleService()..ready = true;
@@ -215,6 +256,7 @@ class _FakeBleService extends BleService {
   bool failStartWrite = false;
   bool blockStartWrite = false;
   int startScanCalls = 0;
+  int stopScanCalls = 0;
   int connectCalls = 0;
   Completer<void> startWriteEntered = Completer<void>();
   Completer<void>? _startWriteRelease;
@@ -255,6 +297,11 @@ class _FakeBleService extends BleService {
     Duration timeout = const Duration(seconds: 30),
   }) async {
     startScanCalls++;
+  }
+
+  @override
+  Future<void> stopScan() async {
+    stopScanCalls++;
   }
 
   @override
