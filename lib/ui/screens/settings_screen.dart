@@ -79,7 +79,8 @@ class SettingsScreen extends StatelessWidget {
                     const SizedBox(height: 14),
                     _TranslationLanguageSettings(controller: c),
                   ],
-                  if (c.sttMode == SttDisplayMode.conversation) ...[
+                  if (c.speechProvider == SttProvider.soniox &&
+                      c.sttMode == SttDisplayMode.conversation) ...[
                     const SizedBox(height: 14),
                     _CommunicationLanguageSettings(controller: c),
                   ],
@@ -329,11 +330,12 @@ class _SttModeSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = controller;
+    final soniox = c.speechProvider == SttProvider.soniox;
     final subtitle = !c.autoTranscribe
         ? '请先开启自动转写'
-        : c.speechProvider == SttProvider.apple
-        ? '双向交流需要 Soniox'
-        : '翻译为单向，交流为双向';
+        : soniox
+        ? '翻译为单向，交流为双向'
+        : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -341,15 +343,17 @@ class _SttModeSelector extends StatelessWidget {
           '实时模式',
           style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
         ),
-        const SizedBox(height: 3),
-        Text(
-          subtitle,
-          style: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 12,
-            height: 1.3,
+        if (subtitle != null) ...[
+          const SizedBox(height: 3),
+          Text(
+            subtitle,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 12,
+              height: 1.3,
+            ),
           ),
-        ),
+        ],
         const SizedBox(height: 10),
         SegmentedButton<SttDisplayMode>(
           key: const ValueKey('stt-display-mode-selector'),
@@ -367,11 +371,12 @@ class _SttModeSelector extends StatelessWidget {
                       ? c.appleTranslationAvailable
                       : c.sonioxTranslationModeAvailable),
             ),
-            ButtonSegment(
-              value: SttDisplayMode.conversation,
-              label: const Text('交流'),
-              enabled: c.conversationModeAvailable,
-            ),
+            if (soniox)
+              ButtonSegment(
+                value: SttDisplayMode.conversation,
+                label: const Text('交流'),
+                enabled: c.conversationModeAvailable,
+              ),
           ],
           selected: {c.sttMode},
           showSelectedIcon: false,
