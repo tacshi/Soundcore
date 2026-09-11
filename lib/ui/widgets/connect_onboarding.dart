@@ -27,7 +27,7 @@ class _ConnectOnboardingState extends State<ConnectOnboarding> {
 
   static const _tipPages = <_TipPage>[
     _TipPage(
-      title: '一键录音',
+      title: '开始录音',
       body: '按下按键开始录音\n再次按下即可结束',
       image: 'assets/product/guide_record.webp',
       highlight: _TipHighlight.recordButton,
@@ -39,7 +39,7 @@ class _ConnectOnboardingState extends State<ConnectOnboarding> {
       highlight: _TipHighlight.center,
     ),
     _TipPage(
-      title: '轻松佩戴',
+      title: '佩戴麦克风',
       body: '推开磁吸垫片\n夹在衣物边缘',
       image: 'assets/product/guide_wear.webp',
       highlight: _TipHighlight.none,
@@ -86,8 +86,8 @@ class _ConnectOnboardingState extends State<ConnectOnboarding> {
     // Finale: auto-sync (local equivalent of Feishu 智能纪要).
     return _TipStep(
       page: const _TipPage(
-        title: '文件自动同步',
-        body: '录音结束后将自动同步到本机\n并支持实时转写与通知',
+        title: '下载录音',
+        body: '在设置中开启自动传输，可下载设备上的录音',
         image: 'assets/product/guide_sync.webp',
         highlight: _TipHighlight.none,
       ),

@@ -3,6 +3,20 @@ import 'package:anker_recorder/state/app_settings_store.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('MOSS credentials round-trip independently of Soniox', () {
+    final settings = AppSettings.fromJson({
+      'speechProvider': 'moss',
+      'mossApiKey': 'moss-key',
+      'sonioxApiKey': 'soniox-key',
+    });
+    expect(settings.speechProvider?.name, 'moss');
+    expect(settings.toJson()['mossApiKey'], 'moss-key');
+    final cleared = settings.copyWith(clearMoss: true);
+    expect(cleared.mossApiKey, isNull);
+    expect(cleared.sonioxApiKey, 'soniox-key');
+    expect(AppSettings.fromJson({}).mossApiKey, isNull);
+  });
+
   test('translation settings use backward-compatible defaults', () {
     final settings = AppSettings.fromJson(const {});
 

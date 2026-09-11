@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'support/moss_fakes.dart';
+import 'package:anker_recorder/ai/moss_stt.dart';
+import 'package:anker_recorder/state/moss_jobs.dart';
 import 'dart:io';
 import 'dart:typed_data' show Endian;
 
@@ -32,6 +35,224 @@ void main() {
     });
     return result;
   }
+
+  test(
+    'MOSS manual transcription retains provider and permits Apple translation',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'moss-controller-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final file = File('${directory.path}/201.wav');
+      await file.writeAsBytes([1, 2, 3]);
+      final moss = FakeMoss()..apiKeyOverride = 'moss-key';
+      final apple = _Apple();
+      final soniox = _Soniox();
+      final c = RecorderController(
+        loadPersistedState: false,
+        mossSpeech: moss,
+        appleSpeech: apple,
+        sonioxSpeech: soniox,
+      )..speechProvider = SttProvider.moss;
+      addTearDown(c.dispose);
+      await c.transcribeLocalFile(file.path);
+      final ref = RecordingReference(path: file.path);
+      expect(c.recordingView(ref).text, 'Transcript');
+      expect(c.recordingView(ref).provider, SttProvider.moss);
+      expect(soniox.fileCalls, 0);
+      await c.translateRecording(ref, sourceLanguage: 'en-US');
+      expect(c.recordingView(ref).translation?.text, '译文');
+      moss.response = {'status': 'FAILED'};
+      await c.transcribeLocalFile(file.path);
+      expect(c.recordingView(ref).text, 'Transcript');
+      expect(c.recordingView(ref).translation?.text, '译文');
+    },
+  );
+
+  test(
+    'MOSS auto transcription waits for stop, deduplicates completion, and snapshots provider',
+    () async {
+      final directory = await Directory.systemTemp.createTemp('moss-stop-');
+      addTearDown(() => directory.delete(recursive: true));
+      final file = File('${directory.path}/202.wav');
+      await file.writeAsBytes([1, 2, 3]);
+      final moss = FakeMoss()..apiKeyOverride = 'initial-key';
+      final ble = _Ble();
+      final c = RecorderController(
+        loadPersistedState: false,
+        ble: ble,
+        mossSpeech: moss,
+        appleSpeech: _Apple(),
+      )..speechProvider = SttProvider.moss;
+      addTearDown(c.dispose);
+      await c.startRecord();
+      c.handleRealtimeStateForTesting(
+        RealtimeStreamState(
+          active: true,
+          fileId: 202,
+          path: file.path,
+          bytesReceived: 320,
+        ),
+      );
+      c.handleRealtimeOpusFrameForTesting(Uint8List(160));
+      expect(moss.uploads, 0);
+      c.setSpeechProvider(SttProvider.apple);
+      moss.apiKeyOverride = 'new-key';
+      ble.stopRecording();
+      await Future<void>.delayed(Duration.zero);
+      final stopped = RealtimeStreamState(
+        fileId: 202,
+        path: file.path,
+        bytesReceived: 320,
+      );
+      c.handleRealtimeStateForTesting(stopped);
+      c.handleRealtimeStateForTesting(stopped);
+      await settleUntil(() => moss.deletes == 1);
+      expect(moss.uploads, 1);
+      expect(moss.keys, everyElement('initial-key'));
+      expect(c.pcmFramesDecoded, 0);
+      expect(c.streamingSttActive, isFalse);
+      expect(
+        c.recordingView(RecordingReference(path: file.path)).provider,
+        SttProvider.moss,
+      );
+    },
+  );
+
+  test('MOSS paused take is not submitted until a full stop', () async {
+    final directory = await Directory.systemTemp.createTemp('moss-pause-');
+    addTearDown(() => directory.delete(recursive: true));
+    final file = File('${directory.path}/203.wav');
+    await file.writeAsBytes([1, 2, 3]);
+    final moss = FakeMoss()..apiKeyOverride = 'key';
+    final ble = _Ble();
+    final c = RecorderController(
+      loadPersistedState: false,
+      ble: ble,
+      mossSpeech: moss,
+      appleSpeech: _Apple(),
+    )..speechProvider = SttProvider.moss;
+    addTearDown(c.dispose);
+    await c.startRecord();
+    c.handleRealtimeStateForTesting(
+      RealtimeStreamState(
+        active: true,
+        fileId: 203,
+        path: file.path,
+        bytesReceived: 320,
+      ),
+    );
+    await c.pauseRecord();
+    c.handleRealtimeStateForTesting(
+      RealtimeStreamState(fileId: 203, path: file.path, bytesReceived: 320),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(moss.uploads, 0);
+    c.setSpeechProvider(SttProvider.apple);
+    final pausedRef = c.currentRecordingReference!;
+    await c.startRecord();
+    expect(c.currentRecordingReference!.sessionId, pausedRef.sessionId);
+    expect(c.recordingView(pausedRef).provider, SttProvider.moss);
+    expect(moss.uploads, 0);
+    ble.stopRecording();
+    await settleUntil(() => moss.deletes == 1);
+    expect(moss.uploads, 1);
+  });
+
+  test(
+    'MOSS result survives a new recording and belongs to the original take',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'moss-concurrent-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final file = File('${directory.path}/204.wav');
+      await file.writeAsBytes([1, 2, 3]);
+      final moss = FakeMoss()
+        ..apiKeyOverride = 'key'
+        ..pendingTask = Completer();
+      final c = RecorderController(
+        loadPersistedState: false,
+        ble: _Ble(),
+        mossSpeech: moss,
+        appleSpeech: _Apple(),
+      )..speechProvider = SttProvider.moss;
+      addTearDown(c.dispose);
+      final work = c.transcribeLocalFile(file.path);
+      await settleUntil(() => moss.polls == 1);
+      await c.startRecord();
+      final newTake = c.currentRecordingReference!;
+      moss.pendingTask!.complete({
+        'status': 'SUCCESS',
+        'text': 'Original take',
+      });
+      await work;
+      expect(
+        c.recordingView(RecordingReference(path: file.path)).text,
+        'Original take',
+      );
+      expect(c.recordingView(newTake).text, isEmpty);
+    },
+  );
+
+  test('MOSS recovery loads existing task with no new upload', () async {
+    final directory = await Directory.systemTemp.createTemp('moss-resume-');
+    addTearDown(() => directory.delete(recursive: true));
+    final file = File('${directory.path}/205.wav');
+    await file.writeAsBytes([1, 2, 3]);
+    final store = MossJobStore(inMemory: true);
+    await store.save([
+      MossJob(
+        id: 'saved',
+        recordingKey: 'file:205',
+        path: file.path,
+        stage: MossJobStage.polling,
+        fileId: 'file',
+        taskId: 'task',
+      ),
+    ]);
+    final moss = FakeMoss()..apiKeyOverride = 'key';
+    final c = RecorderController(
+      loadPersistedState: false,
+      mossSpeech: moss,
+      mossJobStore: store,
+      appleSpeech: _Apple(),
+    )..speechProvider = SttProvider.moss;
+    addTearDown(c.dispose);
+    await c.transcribeLocalFile(file.path);
+    await settleUntil(() => moss.deletes == 1);
+    expect(moss.uploads, 0);
+    expect(
+      c.recordingView(RecordingReference(path: file.path)).text,
+      'Transcript',
+    );
+  });
+
+  test(
+    'MOSS validation failure preserves saved credentials and modes are transcription only',
+    () async {
+      final moss = FakeMoss()..apiKeyOverride = 'previous';
+      final c = RecorderController(
+        loadPersistedState: false,
+        mossSpeech: moss,
+        appleSpeech: _Apple(),
+      )..sttMode = SttDisplayMode.conversation;
+      addTearDown(c.dispose);
+      c.setSpeechProvider(SttProvider.moss);
+      expect(c.sttMode, SttDisplayMode.transcription);
+      c.setSttMode(SttDisplayMode.translation);
+      expect(c.sttMode, SttDisplayMode.transcription);
+      moss.validationError = const MossException('credentials');
+      await expectLater(
+        c.validateAndSaveMossApiKey('bad'),
+        throwsA(isA<MossException>()),
+      );
+      expect(c.mossApiKeyStored, 'previous');
+      moss.validationError = null;
+      await c.validateAndSaveMossApiKey('valid');
+      expect(c.mossApiKeyStored, 'valid');
+    },
+  );
 
   test('provider defaults preserve explicit choices and configured cloud', () {
     expect(

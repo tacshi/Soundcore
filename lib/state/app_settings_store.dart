@@ -8,11 +8,12 @@ import 'package:path_provider/path_provider.dart';
 import '../ai/stt_types.dart';
 import '../ai/speech_provider.dart';
 
-/// Lightweight JSON settings (Soniox API key, STT modes, toggles).
+/// Lightweight JSON settings for speech providers and recording preferences.
 class AppSettingsStore {
   AppSettingsStore._();
 
   static const _fileName = 'app_settings.json';
+  static Future<void> _pendingSave = Future.value();
 
   static Future<File> _file() async {
     Directory base;
@@ -38,16 +39,21 @@ class AppSettingsStore {
     }
   }
 
-  static Future<void> save(AppSettings s) async {
-    try {
-      final f = await _file();
-      await f.writeAsString(
-        const JsonEncoder.withIndent('  ').convert(s.toJson()),
-      );
-      debugPrint('[AppSettings] saved');
-    } catch (e) {
-      debugPrint('[AppSettings] save failed: $e');
-    }
+  static Future<void> save(AppSettings s, {bool strict = false}) {
+    final encoded = const JsonEncoder.withIndent('  ').convert(s.toJson());
+    final operation = _pendingSave.then((_) async {
+      try {
+        final file = await _file();
+        final temporary = File('${file.path}.tmp');
+        await temporary.writeAsString(encoded, flush: true);
+        await temporary.rename(file.path);
+      } catch (error) {
+        debugPrint('[AppSettings] save failed: $error');
+        if (strict) rethrow;
+      }
+    });
+    _pendingSave = operation.catchError((Object _) {});
+    return operation;
   }
 }
 
@@ -56,6 +62,7 @@ class AppSettings {
     this.speechProvider,
     this.appleSourceLanguage = '',
     this.sonioxApiKey,
+    this.mossApiKey,
     this.autoTranscribe = true,
     this.autoRealtime = true,
     this.transcriptLanguage = 'auto',
@@ -66,6 +73,7 @@ class AppSettings {
   });
 
   final String? sonioxApiKey;
+  final String? mossApiKey;
 
   /// Null means an existing install has not selected a provider yet.
   final SttProvider? speechProvider;
@@ -82,6 +90,7 @@ class AppSettings {
     SttProvider? speechProvider,
     String? appleSourceLanguage,
     String? sonioxApiKey,
+    String? mossApiKey,
     bool? autoTranscribe,
     bool? autoRealtime,
     String? transcriptLanguage,
@@ -90,10 +99,12 @@ class AppSettings {
     String? ownerLanguage,
     String? guestLanguage,
     bool clearSoniox = false,
+    bool clearMoss = false,
   }) {
     return AppSettings(
       speechProvider: speechProvider ?? this.speechProvider,
       appleSourceLanguage: appleSourceLanguage ?? this.appleSourceLanguage,
+      mossApiKey: clearMoss ? null : (mossApiKey ?? this.mossApiKey),
       sonioxApiKey: clearSoniox ? null : (sonioxApiKey ?? this.sonioxApiKey),
       autoTranscribe: autoTranscribe ?? this.autoTranscribe,
       autoRealtime: autoRealtime ?? this.autoRealtime,
@@ -111,6 +122,7 @@ class AppSettings {
     'appleSourceLanguage': appleSourceLanguage,
     if (sonioxApiKey != null && sonioxApiKey!.isNotEmpty)
       'sonioxApiKey': sonioxApiKey,
+    if (mossApiKey != null && mossApiKey!.isNotEmpty) 'mossApiKey': mossApiKey,
     'autoTranscribe': autoTranscribe,
     'autoRealtime': autoRealtime,
     'transcriptLanguage': transcriptLanguage,
@@ -138,6 +150,7 @@ class AppSettings {
       speechProvider: SttProvider.parse(map['speechProvider']),
       appleSourceLanguage: _str(map['appleSourceLanguage']) ?? '',
       sonioxApiKey: _str(map['sonioxApiKey']),
+      mossApiKey: _str(map['mossApiKey']),
       autoTranscribe: map['autoTranscribe'] != false,
       autoRealtime: map['autoRealtime'] != false,
       transcriptLanguage: _str(map['transcriptLanguage']) ?? 'auto',

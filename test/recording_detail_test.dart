@@ -432,6 +432,53 @@ void main() {
 
   for (final size in [const Size(320, 740), const Size(1024, 900)]) {
     for (final scale in [1.0, 2.0]) {
+      testWidgets(
+        'provider settings show only supported controls $size $scale',
+        (tester) async {
+          final c = _RecordingController();
+          addTearDown(c.dispose);
+          await pump(
+            tester,
+            c,
+            const SettingsScreen(),
+            size: size,
+            scale: scale,
+          );
+          expect(find.text('交流'), findsOneWidget);
+          c.setSpeechProvider(SttProvider.moss);
+          await tester.pumpAndSettle();
+          expect(find.byKey(const ValueKey('apikey-moss')), findsOneWidget);
+          expect(find.text('录音结束后生成文字'), findsOneWidget);
+          expect(find.text('实时模式'), findsNothing);
+          expect(find.text('语言提示'), findsNothing);
+          expect(find.text('交流'), findsNothing);
+          expect(find.text('Soniox API Key'), findsNothing);
+          await savePreview(
+            tester,
+            'moss-settings-${size.width.toInt()}-$scale',
+          );
+          await tester.ensureVisible(find.text('验证并保存'));
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
+          c.setSpeechProvider(SttProvider.apple);
+          await tester.pumpAndSettle();
+          expect(find.byKey(const ValueKey('apikey-moss')), findsNothing);
+          final mode = tester.widget<SegmentedButton<SttDisplayMode>>(
+            find.byKey(const ValueKey('stt-display-mode-selector')),
+          );
+          expect(mode.segments.map((s) => s.value), [
+            SttDisplayMode.transcription,
+            SttDisplayMode.translation,
+          ]);
+          expect(find.text('交流'), findsNothing);
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  for (final size in [const Size(320, 740), const Size(1024, 900)]) {
+    for (final scale in [1.0, 2.0]) {
       testWidgets('detail and Apple setup fit $size at text scale $scale', (
         tester,
       ) async {

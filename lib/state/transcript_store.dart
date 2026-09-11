@@ -152,6 +152,7 @@ class TranscriptStore {
     required Map<int, Map<String, String>> aliasesByFileId,
     Map<String, TranscriptMetadata> metadata = const {},
     Map<String, RecordingTranslation> translations = const {},
+    bool strict = false,
   }) {
     final paths = Map<String, String>.from(byPath);
     final ids = Map<int, String>.from(byFileId);
@@ -159,10 +160,12 @@ class TranscriptStore {
     final idAliases = _copyAliases(aliasesByFileId);
     final meta = Map<String, TranscriptMetadata>.from(metadata);
     final translated = Map<String, RecordingTranslation>.from(translations);
-    _pendingSave = _pendingSave.then(
-      (_) => _write(paths, ids, pathAliases, idAliases, meta, translated),
+    final operation = _pendingSave.then(
+      (_) =>
+          _write(paths, ids, pathAliases, idAliases, meta, translated, strict),
     );
-    return _pendingSave;
+    _pendingSave = operation.catchError((Object _) {});
+    return operation;
   }
 
   static Map<K, Map<String, String>> _copyAliases<K>(
@@ -200,6 +203,7 @@ class TranscriptStore {
     Map<int, Map<String, String>> aliasesByFileId,
     Map<String, TranscriptMetadata> metadata,
     Map<String, RecordingTranslation> translations,
+    bool strict,
   ) async {
     try {
       final file = await _file();
@@ -219,6 +223,7 @@ class TranscriptStore {
       await temporary.rename(file.path);
     } catch (e) {
       debugPrint('[TranscriptStore] save failed: $e');
+      if (strict) rethrow;
     }
   }
 }
