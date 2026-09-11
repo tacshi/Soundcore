@@ -1,4 +1,6 @@
 import 'package:anker_recorder/state/transcript_store.dart';
+import 'package:anker_recorder/state/recording.dart';
+import 'package:anker_recorder/ai/speech_provider.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -30,4 +32,44 @@ void main() {
     expect(data.aliasesByPath['/tmp/123.wav'], {'1': '张三'});
     expect(data.aliasesByFileId[123], {'1': '张三'});
   });
+
+  test(
+    'provider and revision-bound translation round-trip with legacy source',
+    () {
+      final data = TranscriptStore.decode(
+        TranscriptStore.encode(
+          byPath: const {'/tmp/123.wav': 'Original'},
+          byFileId: const {123: 'Original'},
+          aliasesByPath: const {},
+          aliasesByFileId: const {},
+          metadata: const {
+            'file:123': TranscriptMetadata(
+              provider: SttProvider.apple,
+              sourceLanguage: 'en-US',
+              revision: 2,
+            ),
+          },
+          translations: const {
+            'file:123': RecordingTranslation(
+              text: '译文',
+              sourceLanguage: 'en-US',
+              targetLanguage: 'zh',
+              provider: SttProvider.apple,
+              sourceRevision: 2,
+            ),
+          },
+        ),
+      );
+      expect(data.byFileId[123], 'Original');
+      expect(data.metadata['file:123']!.provider, SttProvider.apple);
+      expect(data.translations['file:123']!.sourceRevision, 2);
+      expect(data.translations['file:123']!.text, '译文');
+      final malformed = TranscriptStore.decode({
+        'translations': {
+          'file:123': {'text': 5},
+        },
+      });
+      expect(malformed.translations, isEmpty);
+    },
+  );
 }

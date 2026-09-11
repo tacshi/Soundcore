@@ -1,11 +1,9 @@
-import 'dart:async';
-
 import 'package:anker_recorder/ai/stt_types.dart';
 import 'package:anker_recorder/state/recorder_controller.dart';
 import 'package:anker_recorder/ui/screens/device_screen.dart';
 import 'package:anker_recorder/ui/screens/home_screen.dart';
 import 'package:anker_recorder/ui/screens/settings_screen.dart';
-import 'package:anker_recorder/ui/shell.dart';
+import 'package:anker_recorder/ui/screens/communication_screen.dart';
 import 'package:anker_recorder/ui/widgets/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -34,48 +32,6 @@ void main() {
     expect(controller.isLiveSession, isFalse);
   });
 
-  testWidgets('Home remains a flat transcript view when auto STT is disabled', (
-    tester,
-  ) async {
-    final controller = RecorderController(loadPersistedState: false)
-      ..connected = true
-      ..recording = true
-      ..autoTranscribe = false;
-    addTearDown(controller.dispose);
-
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: controller,
-        child: const MaterialApp(home: HomeScreen()),
-      ),
-    );
-
-    expect(find.text('录音中'), findsNothing);
-    expect(find.text('自动转写已关闭，可在「设置」中开启。'), findsOneWidget);
-    expect(find.text('即时转写 · Soniox'), findsOneWidget);
-    expect(
-      find.byKey(const ValueKey('live-session-indicator')),
-      findsOneWidget,
-    );
-    expect(find.byKey(const ValueKey('copy-live-transcript')), findsNothing);
-    expect(find.byKey(const ValueKey('clear-live-transcript')), findsNothing);
-    expect(
-      find.byKey(const ValueKey('live-transcript-scroll')),
-      findsOneWidget,
-    );
-    expect(find.byType(SurfaceCard), findsNothing);
-
-    controller
-      ..autoTranscribe = true
-      ..notifyListeners();
-    await tester.pump();
-    expect(find.text('实时同步转写'), findsNothing);
-    expect(find.text('即时转写 · Soniox'), findsOneWidget);
-    if (!controller.sttConfigured) {
-      expect(find.text('请在「设置」中配置 SONIOX_API_KEY'), findsOneWidget);
-    }
-  });
-
   testWidgets('Home displays recording history tabs while idle', (
     tester,
   ) async {
@@ -94,149 +50,8 @@ void main() {
       find.byKey(const ValueKey('live-transcript-placeholder')),
       findsNothing,
     );
-    expect(find.text('已导出'), findsOneWidget);
+    expect(find.text('本地'), findsOneWidget);
     expect(find.text('设备端'), findsOneWidget);
-  });
-
-  testWidgets('Home stays on transcript until live finalization finishes', (
-    tester,
-  ) async {
-    final controller = RecorderController(loadPersistedState: false)
-      ..connected = true
-      ..recording = true
-      ..autoTranscribe = true
-      ..transcript = 'Current live session';
-    addTearDown(controller.dispose);
-
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: controller,
-        child: const MaterialApp(home: AppShell()),
-      ),
-    );
-
-    expect(
-      find.byKey(const ValueKey('live-transcript-scroll')),
-      findsOneWidget,
-    );
-    expect(find.text('已导出'), findsNothing);
-    expect(find.text('首页'), findsNothing);
-    expect(find.byKey(const ValueKey('bottom-navigation-bar')), findsNothing);
-    expect(find.byKey(const ValueKey('pause-recording')), findsOneWidget);
-
-    controller
-      ..recording = false
-      ..streamingSttActive = true
-      ..notifyListeners();
-    await tester.pump();
-    expect(
-      find.byKey(const ValueKey('live-transcript-scroll')),
-      findsOneWidget,
-    );
-    expect(find.text('已导出'), findsNothing);
-    expect(find.byKey(const ValueKey('bottom-navigation-bar')), findsNothing);
-    expect(find.byKey(const ValueKey('pause-recording')), findsNothing);
-    expect(find.byKey(const ValueKey('start-recording')), findsNothing);
-
-    controller
-      ..streamingSttActive = false
-      ..notifyListeners();
-    await tester.pumpAndSettle();
-    expect(find.byKey(const ValueKey('live-transcript-scroll')), findsNothing);
-    expect(find.text('已导出'), findsOneWidget);
-    expect(find.text('设备端'), findsOneWidget);
-    expect(find.text('首页'), findsOneWidget);
-    expect(find.text('转写'), findsNothing);
-    expect(find.byKey(const ValueKey('bottom-navigation-bar')), findsOneWidget);
-  });
-
-  testWidgets('a live session takes over from another tab', (tester) async {
-    final controller = RecorderController(loadPersistedState: false)
-      ..connected = true;
-    addTearDown(controller.dispose);
-
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: controller,
-        child: const MaterialApp(home: AppShell()),
-      ),
-    );
-
-    await tester.tap(find.byKey(const ValueKey('nav-device')));
-    await tester.pump();
-    expect(
-      find.byKey(const ValueKey('device-battery-section')),
-      findsOneWidget,
-    );
-
-    controller
-      ..recording = true
-      ..notifyListeners();
-    await tester.pump();
-
-    expect(
-      find.byKey(const ValueKey('live-transcript-scroll')),
-      findsOneWidget,
-    );
-    expect(find.byKey(const ValueKey('bottom-navigation-bar')), findsNothing);
-  });
-
-  testWidgets('live transcript always follows newly appended text', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(390, 600);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    final initial = List.generate(
-      50,
-      (index) => 'Current session transcript line $index',
-    ).join('\n');
-    final controller = RecorderController(loadPersistedState: false)
-      ..connected = true
-      ..recording = true
-      ..autoTranscribe = true
-      ..transcript = initial;
-    addTearDown(controller.dispose);
-
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: controller,
-        child: const MaterialApp(home: HomeScreen()),
-      ),
-    );
-    await tester.pump();
-
-    final scrollView = tester.widget<SingleChildScrollView>(
-      find.byKey(const ValueKey('live-transcript-scroll')),
-    );
-    final scrollController = scrollView.controller!;
-    expect(scrollController.position.maxScrollExtent, greaterThan(0));
-    expect(
-      scrollController.offset,
-      moreOrLessEquals(scrollController.position.maxScrollExtent),
-    );
-
-    scrollController.jumpTo(0);
-    controller
-      ..transcript = '$initial\nNewest incoming transcript line'
-      ..notifyListeners();
-    await tester.pump();
-
-    expect(
-      scrollController.offset,
-      moreOrLessEquals(scrollController.position.maxScrollExtent),
-    );
-
-    expect(find.byKey(const ValueKey('copy-live-transcript')), findsNothing);
-    expect(find.byKey(const ValueKey('clear-live-transcript')), findsNothing);
-    expect(find.byKey(const ValueKey('pause-recording')), findsOneWidget);
-
-    controller.clearTranscript();
-    await tester.pump();
-    expect(scrollController.position.maxScrollExtent, 0);
-    expect(scrollController.offset, 0);
   });
 
   test('Soniox translation modes enforce distinct languages', () {
@@ -297,7 +112,10 @@ void main() {
     expect(find.textContaining('xAI'), findsNothing);
     expect(find.byKey(const ValueKey('apikey-soniox')), findsOneWidget);
     final languageSelector = tester.widget<DropdownButton<String>>(
-      find.byKey(const ValueKey('transcript-language-selector')),
+      find.descendant(
+        of: find.byKey(const ValueKey('transcript-language-selector')),
+        matching: find.byType(DropdownButton<String>),
+      ),
     );
     expect(languageSelector.items!.first.value, 'auto');
     expect(languageSelector.items!.first.child, isA<Text>());
@@ -357,176 +175,7 @@ void main() {
     expect(find.byType(SurfaceCard), findsNothing);
   });
 
-  testWidgets('translation mode shows latest translation and source text', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(390, 844);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    final controller = RecorderController(loadPersistedState: false)
-      ..connected = true
-      ..recording = true
-      ..autoTranscribe = true
-      ..sttMode = SttDisplayMode.translation
-      ..translationTargetLanguage = 'zh'
-      ..translationTurns = const [
-        SttTranslationTurn(
-          targetLanguage: 'zh',
-          sourceLanguage: 'en',
-          text: '过时的翻译',
-          isFinal: true,
-          sourceText: 'Old source',
-        ),
-        SttTranslationTurn(
-          targetLanguage: 'zh',
-          sourceLanguage: 'en',
-          text: '上上句',
-          isFinal: true,
-          sourceText: 'Earlier source',
-        ),
-        SttTranslationTurn(
-          targetLanguage: 'zh',
-          sourceLanguage: 'en',
-          text: '上一句',
-          isFinal: true,
-          sourceText: 'Previous source',
-        ),
-        SttTranslationTurn(
-          targetLanguage: 'zh',
-          sourceLanguage: 'en',
-          text: '最新翻译',
-          isFinal: false,
-          sourceText: 'Latest original',
-        ),
-      ];
-    addTearDown(controller.dispose);
-
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: controller,
-        child: const MaterialApp(home: HomeScreen()),
-      ),
-    );
-
-    expect(find.text('即时翻译 · 中文'), findsOneWidget);
-    expect(find.text('最新翻译'), findsOneWidget);
-    expect(find.text('上一句'), findsOneWidget);
-    expect(find.text('上上句'), findsOneWidget);
-    expect(find.text('过时的翻译'), findsOneWidget);
-    expect(find.text('Latest original'), findsOneWidget);
-    expect(find.text('原文 · English'), findsOneWidget);
-
-    controller
-      ..pendingTranslationSource = const SttSourceChunk(
-        language: 'fr',
-        text: 'Bonjour',
-      )
-      ..notifyListeners();
-    await tester.pump();
-    expect(find.text('最新翻译'), findsOneWidget);
-    expect(find.text('Bonjour'), findsOneWidget);
-    expect(find.text('待翻译原文 · French'), findsOneWidget);
-
-    controller
-      ..transcriptError = '翻译模式错误：test'
-      ..pendingTranslationSource = null
-      ..notifyListeners();
-    await tester.pump();
-    expect(find.text('翻译模式错误：test'), findsOneWidget);
-    expect(find.text('最新翻译'), findsOneWidget);
-
-    controller
-      ..transcriptError = null
-      ..translationTurns = const []
-      ..transcript = 'New source text'
-      ..notifyListeners();
-    await tester.pump();
-    expect(find.byKey(const ValueKey('translation-pending')), findsOneWidget);
-    expect(find.text('New source text'), findsOneWidget);
-    expect(find.text('正在翻译…'), findsOneWidget);
-  });
-
-  testWidgets('translation canvas follows new turns and pending source', (
-    tester,
-  ) async {
-    tester.view.physicalSize = const Size(390, 600);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    final initialTurns = List.generate(
-      30,
-      (index) => SttTranslationTurn(
-        targetLanguage: 'zh',
-        sourceLanguage: 'en',
-        text: 'Current session translated line $index with enough text',
-        isFinal: true,
-        sourceText: 'Source line $index',
-      ),
-    );
-    final controller = RecorderController(loadPersistedState: false)
-      ..connected = true
-      ..recording = true
-      ..autoTranscribe = true
-      ..sttMode = SttDisplayMode.translation
-      ..translationTargetLanguage = 'zh'
-      ..translationTurns = initialTurns;
-    addTearDown(controller.dispose);
-
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: controller,
-        child: const MaterialApp(home: HomeScreen()),
-      ),
-    );
-    await tester.pump();
-
-    final scrollView = tester.widget<SingleChildScrollView>(
-      find.byKey(const ValueKey('live-transcript-scroll')),
-    );
-    final scrollController = scrollView.controller!;
-    expect(scrollController.position.maxScrollExtent, greaterThan(0));
-    expect(
-      scrollController.offset,
-      moreOrLessEquals(scrollController.position.maxScrollExtent),
-    );
-
-    scrollController.jumpTo(0);
-    controller
-      ..translationTurns = [
-        ...initialTurns,
-        const SttTranslationTurn(
-          targetLanguage: 'zh',
-          sourceLanguage: 'en',
-          text: 'Newest translated line',
-          isFinal: false,
-          sourceText: 'Newest source line',
-        ),
-      ]
-      ..notifyListeners();
-    await tester.pump();
-    expect(
-      scrollController.offset,
-      moreOrLessEquals(scrollController.position.maxScrollExtent),
-    );
-
-    scrollController.jumpTo(0);
-    controller
-      ..pendingTranslationSource = const SttSourceChunk(
-        language: 'en',
-        text: 'Newest pending source',
-      )
-      ..notifyListeners();
-    await tester.pump();
-    expect(
-      scrollController.offset,
-      moreOrLessEquals(scrollController.position.maxScrollExtent),
-    );
-  });
-
-  testWidgets('communication mode replaces shell with equal rotated panels', (
+  testWidgets('communication detail keeps equal rotated panels after pause', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(390, 844);
@@ -574,7 +223,7 @@ void main() {
     await tester.pumpWidget(
       ChangeNotifierProvider.value(
         value: controller,
-        child: const MaterialApp(home: AppShell()),
+        child: const MaterialApp(home: CommunicationScreen()),
       ),
     );
 
@@ -618,29 +267,7 @@ void main() {
       ..streamingSttActive = false
       ..notifyListeners();
     await tester.pump();
-    expect(find.text('首页'), findsOneWidget);
-  });
-
-  testWidgets('recording shortcut returns the shell to Home', (tester) async {
-    final controller = RecorderController(loadPersistedState: false);
-    addTearDown(controller.dispose);
-
-    await tester.pumpWidget(
-      ChangeNotifierProvider.value(
-        value: controller,
-        child: const MaterialApp(home: AppShell()),
-      ),
-    );
-
-    await tester.tap(find.text('设置'));
-    await tester.pump();
-    expect(find.text('AI 转写'), findsOneWidget);
-
-    unawaited(controller.requestRecordingFromShortcut());
-    await tester.pump();
-    await tester.pump();
-
-    expect(find.text('AI 转写'), findsNothing);
-    expect(find.text('未连接设备'), findsOneWidget);
+    expect(find.text('双向交流'), findsOneWidget);
+    expect(find.byKey(const ValueKey('communication-pause')), findsOneWidget);
   });
 }

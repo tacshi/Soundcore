@@ -2,12 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../ai/stt_types.dart';
+import '../../ai/apple_speech.dart';
 import '../../ai/soniox_languages.dart';
 import '../../state/recorder_controller.dart';
 import '../../theme/app_theme.dart';
 import '../widgets/widgets.dart';
 
-/// App preferences: Soniox STT, streaming, BLE, and diagnostics.
+/// Processing choices apply to the next recording.
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
@@ -18,7 +19,7 @@ class SettingsScreen extends StatelessWidget {
     return GradientScaffold(
       child: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 8, 20, 100),
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
           children: [
             const SectionLabel('传输'),
             _SettingsGroup(
@@ -27,13 +28,13 @@ class SettingsScreen extends StatelessWidget {
                 title: '自动传输',
                 subtitle: c.autoTransferActive
                     ? '正在传输设备端未导出录音…'
-                    : '自动补齐已结束但未导出的历史录音（当前录音始终实时传输，以支持转写）',
+                    : '自动下载设备上的历史录音',
                 value: c.autoRealtime,
                 onChanged: c.setAutoRealtime,
               ),
             ),
             const SizedBox(height: 18),
-            const SectionLabel('AI 转写'),
+            const SectionLabel('语音与翻译'),
             _SettingsGroup(
               key: const ValueKey('settings-stt-group'),
               child: Column(
@@ -41,24 +42,40 @@ class SettingsScreen extends StatelessWidget {
                 children: [
                   _SettingsSwitch(
                     title: '自动转写',
-                    subtitle: '录音时实时/近实时生成文字',
+                    subtitle: '录音时生成文字',
                     value: c.autoTranscribe,
                     onChanged: c.setAutoTranscribe,
                   ),
                   const Divider(height: 20),
-                  _ApiKeyField(
-                    key: const ValueKey('apikey-soniox'),
-                    label: 'Soniox API Key',
-                    envName: 'SONIOX_API_KEY',
-                    initialValue: c.sonioxApiKeyStored ?? '',
-                    configured: c.sonioxConfigured,
-                    onSave: c.setSonioxApiKey,
-                  ),
-                  const SizedBox(height: 14),
-                  _TranscriptLanguageSelector(controller: c),
+                  _ProviderSelector(controller: c),
+                  const SizedBox(height: 16),
+                  if (c.speechProvider == SttProvider.soniox) ...[
+                    _ApiKeyField(
+                      key: const ValueKey('apikey-soniox'),
+                      label: 'Soniox API Key',
+                      envName: 'SONIOX_API_KEY',
+                      initialValue: c.sonioxApiKeyStored ?? '',
+                      configured: c.sonioxConfigured,
+                      onSave: c.setSonioxApiKey,
+                    ),
+                    const SizedBox(height: 14),
+                    _TranscriptLanguageSelector(controller: c),
+                  ] else
+                    _AppleLanguageSettings(controller: c),
+                  if (c.isLiveSession) ...[
+                    const SizedBox(height: 12),
+                    const Text(
+                      '更改将用于下一段录音',
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
                   const Divider(height: 28),
                   _SttModeSelector(controller: c),
-                  if (c.sttMode == SttDisplayMode.translation) ...[
+                  if (c.sttMode == SttDisplayMode.translation &&
+                      c.speechProvider == SttProvider.soniox) ...[
                     const SizedBox(height: 14),
                     _TranslationLanguageSettings(controller: c),
                   ],
@@ -72,6 +89,178 @@ class SettingsScreen extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _ProviderSelector extends StatelessWidget {
+  const _ProviderSelector({required this.controller});
+  final RecorderController controller;
+  @override
+  Widget build(BuildContext context) => DropdownButtonFormField<SttProvider>(
+    key: ValueKey('speech-provider-${controller.speechProvider.name}'),
+    initialValue: controller.speechProvider,
+    decoration: const InputDecoration(labelText: '语音服务'),
+    isExpanded: true,
+    items: [
+      for (final provider in SttProvider.values)
+        DropdownMenuItem(value: provider, child: Text(provider.label)),
+    ],
+    onChanged: (provider) {
+      if (provider != null) controller.setSpeechProvider(provider);
+    },
+  );
+}
+
+class _AppleLanguageSettings extends StatelessWidget {
+  const _AppleLanguageSettings({required this.controller});
+  final RecorderController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = controller;
+    final capabilities = c.appleCapabilities;
+    final preparing = c.appleLanguagePreparationBusy;
+    final loading = c.appleCapabilitiesLoading;
+    if (!capabilities.supported) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            loading
+                ? '正在检查设备支持…'
+                : c.appleSetupError ?? 'Apple 设备端需要 iOS 26 和受支持的设备。',
+            style: const TextStyle(color: AppColors.textSecondary, height: 1.4),
+          ),
+          if (!loading)
+            TextButton.icon(
+              onPressed: c.refreshAppleCapabilities,
+              icon: const Icon(Icons.refresh_rounded),
+              label: const Text('重新检查'),
+            ),
+        ],
+      );
+    }
+    final speechReady = capabilities.speechStatus == SpeechResourceStatus.ready;
+    final translationReady =
+        capabilities.translationStatus == SpeechResourceStatus.ready;
+    final requiresDownload =
+        capabilities.speechStatus == SpeechResourceStatus.needsDownload ||
+        capabilities.translationStatus == SpeechResourceStatus.needsDownload;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _AppleLanguageField(
+          label: '原文语言',
+          value: c.appleSourceLanguage,
+          languages: capabilities.speechLanguages,
+          onChanged: preparing ? null : c.setAppleSourceLanguage,
+        ),
+        const SizedBox(height: 16),
+        _AppleLanguageField(
+          label: '翻译目标语言',
+          value: c.translationTargetLanguage,
+          languages: capabilities.translationLanguages,
+          onChanged: preparing ? null : c.setTranslationTargetLanguage,
+        ),
+        const SizedBox(height: 12),
+        Text(
+          preparing
+              ? '正在准备语言…'
+              : loading
+              ? '正在检查语言…'
+              : !speechReady
+              ? (capabilities.speechStatus == SpeechResourceStatus.unsupported
+                    ? '请选择受支持的原文语言'
+                    : '转写语言需要下载')
+              : !translationReady
+              ? (capabilities.translationStatus ==
+                        SpeechResourceStatus.unsupported
+                    ? '转写可用，请选择受支持的翻译语言组合'
+                    : '转写可用，翻译语言需要下载')
+              : '转写和翻译语言已就绪',
+          style: const TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 13,
+            height: 1.4,
+          ),
+        ),
+        if (c.appleSetupError != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            c.appleSetupError!,
+            style: const TextStyle(
+              color: AppColors.coral,
+              fontSize: 13,
+              height: 1.4,
+            ),
+          ),
+        ],
+        if (requiresDownload || preparing || c.appleSetupError != null) ...[
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: FilledButton.icon(
+              key: const ValueKey('prepare-apple-languages'),
+              onPressed: preparing || loading || c.isLiveSession
+                  ? null
+                  : c.prepareAppleLanguages,
+              icon: preparing
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.download_rounded),
+              label: Text(
+                preparing
+                    ? '准备中…'
+                    : c.appleSetupError == null
+                    ? '下载并准备语言'
+                    : '重试',
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _AppleLanguageField extends StatelessWidget {
+  const _AppleLanguageField({
+    required this.label,
+    required this.value,
+    required this.languages,
+    required this.onChanged,
+  });
+  final String label;
+  final String value;
+  final List<SpeechLanguage> languages;
+  final ValueChanged<String>? onChanged;
+  @override
+  Widget build(BuildContext context) {
+    final selected = languages
+        .where((language) => language.code.toLowerCase() == value.toLowerCase())
+        .firstOrNull
+        ?.code;
+    return DropdownButtonFormField<String>(
+      key: ValueKey('apple-language-$label-$selected'),
+      initialValue: selected,
+      isExpanded: true,
+      decoration: InputDecoration(labelText: label),
+      hint: const Text('选择语言'),
+      items: [
+        for (final language in languages)
+          DropdownMenuItem(
+            value: language.code,
+            child: Text(language.name, overflow: TextOverflow.ellipsis),
+          ),
+      ],
+      onChanged: onChanged == null
+          ? null
+          : (value) {
+              if (value != null) onChanged!(value);
+            },
     );
   }
 }
@@ -116,36 +305,18 @@ class _TranscriptLanguageSelector extends StatelessWidget {
         )
         ? controller.transcriptLanguage
         : 'auto';
-    return Row(
-      children: [
-        const Expanded(
-          child: Text(
-            '语言提示',
-            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-          ),
-        ),
-        DropdownButtonHideUnderline(
-          child: DropdownButton<String>(
-            key: const ValueKey('transcript-language-selector'),
-            value: selected,
-            isDense: true,
-            borderRadius: BorderRadius.circular(10),
-            icon: const Icon(Icons.expand_more_rounded, size: 18),
-            style: const TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-            ),
-            items: [
-              for (final language in _languages)
-                DropdownMenuItem(value: language.$1, child: Text(language.$2)),
-            ],
-            onChanged: (value) {
-              if (value != null) controller.setTranscriptLanguage(value);
-            },
-          ),
-        ),
+    return DropdownButtonFormField<String>(
+      key: const ValueKey('transcript-language-selector'),
+      initialValue: selected,
+      decoration: const InputDecoration(labelText: '语言提示'),
+      isExpanded: true,
+      items: [
+        for (final language in _languages)
+          DropdownMenuItem(value: language.$1, child: Text(language.$2)),
       ],
+      onChanged: (value) {
+        if (value != null) controller.setTranscriptLanguage(value);
+      },
     );
   }
 }
@@ -158,7 +329,11 @@ class _SttModeSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = controller;
-    final subtitle = !c.autoTranscribe ? '请先开启自动转写' : '翻译为单向翻译，交流为面对面双向翻译';
+    final subtitle = !c.autoTranscribe
+        ? '请先开启自动转写'
+        : c.speechProvider == SttProvider.apple
+        ? '双向交流需要 Soniox'
+        : '翻译为单向，交流为双向';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -170,7 +345,7 @@ class _SttModeSelector extends StatelessWidget {
         Text(
           subtitle,
           style: const TextStyle(
-            color: AppColors.textMuted,
+            color: AppColors.textSecondary,
             fontSize: 12,
             height: 1.3,
           ),
@@ -182,19 +357,20 @@ class _SttModeSelector extends StatelessWidget {
             const ButtonSegment(
               value: SttDisplayMode.transcription,
               label: Text('转写'),
-              icon: Icon(Icons.subtitles_outlined),
             ),
             ButtonSegment(
               value: SttDisplayMode.translation,
               label: const Text('翻译'),
-              icon: const Icon(Icons.translate_rounded),
-              enabled: c.sonioxTranslationModeAvailable,
+              enabled:
+                  c.autoTranscribe &&
+                  (c.speechProvider == SttProvider.apple
+                      ? c.appleTranslationAvailable
+                      : c.sonioxTranslationModeAvailable),
             ),
             ButtonSegment(
               value: SttDisplayMode.conversation,
               label: const Text('交流'),
-              icon: const Icon(Icons.record_voice_over_outlined),
-              enabled: c.sonioxTranslationModeAvailable,
+              enabled: c.conversationModeAvailable,
             ),
           ],
           selected: {c.sttMode},
@@ -257,7 +433,7 @@ class _SettingsSwitch extends StatelessWidget {
               Text(
                 subtitle,
                 style: const TextStyle(
-                  color: AppColors.textMuted,
+                  color: AppColors.textSecondary,
                   fontSize: 12,
                   height: 1.3,
                 ),
@@ -366,7 +542,7 @@ class _LanguageField extends StatelessWidget {
                 Text(
                   label,
                   style: const TextStyle(
-                    color: AppColors.textMuted,
+                    color: AppColors.textSecondary,
                     fontSize: 11,
                   ),
                 ),
@@ -571,7 +747,7 @@ class _ApiKeyFieldState extends State<_ApiKeyField> {
             hintText: '粘贴 API Key…',
             hintStyle: const TextStyle(
               fontSize: 12,
-              color: AppColors.textMuted,
+              color: AppColors.textSecondary,
             ),
             filled: true,
             fillColor: AppColors.bgElevated,
@@ -606,7 +782,7 @@ class _ApiKeyFieldState extends State<_ApiKeyField> {
                     icon: const Icon(
                       Icons.clear_rounded,
                       size: 18,
-                      color: AppColors.textMuted,
+                      color: AppColors.textSecondary,
                     ),
                   ),
               ],
@@ -634,7 +810,7 @@ class _ApiKeyFieldState extends State<_ApiKeyField> {
         Text(
           '环境变量：export ${widget.envName}=…',
           style: const TextStyle(
-            color: AppColors.textMuted,
+            color: AppColors.textSecondary,
             fontSize: 10,
             height: 1.3,
           ),

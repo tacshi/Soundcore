@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:file_selector/file_selector.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -11,11 +10,10 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../ai/stt_types.dart';
 import '../../protocol/models.dart';
-import '../../state/export_catalog.dart';
 import '../../state/recorder_controller.dart';
+import '../recording_navigation.dart';
 import '../../theme/app_theme.dart';
 import '../../wifi/wifi_export_service.dart';
-import '../widgets/inline_player.dart';
 import '../widgets/widgets.dart';
 
 /// On-device + local export file list (embedded in Home when not live recording).
@@ -124,17 +122,15 @@ class _FilesBodyState extends State<FilesBody>
               indicatorColor: AppColors.accent,
               indicatorWeight: 2,
               labelColor: AppColors.accent,
-              unselectedLabelColor: AppColors.textMuted,
-              labelStyle: const TextStyle(
+              unselectedLabelColor: AppColors.textSecondary,
+              labelStyle: Theme.of(context).textTheme.labelLarge?.copyWith(
                 fontWeight: FontWeight.w700,
                 fontSize: 13,
               ),
-              unselectedLabelStyle: const TextStyle(
-                fontWeight: FontWeight.w500,
-                fontSize: 13,
-              ),
+              unselectedLabelStyle: Theme.of(context).textTheme.labelLarge
+                  ?.copyWith(fontWeight: FontWeight.w500, fontSize: 13),
               tabs: [
-                Tab(text: localCount > 0 ? '已导出 ($localCount)' : '已导出'),
+                Tab(text: localCount > 0 ? '本地 ($localCount)' : '本地'),
                 Tab(text: deviceCount > 0 ? '设备端 ($deviceCount)' : '设备端'),
               ],
             ),
@@ -262,120 +258,209 @@ class _LocalExportsTabState extends State<_LocalExportsTab> {
 
   @override
   Widget build(BuildContext context) {
-    if (widget.paths.isEmpty) {
-      return const _Hint(
-        icon: Icons.folder_open_rounded,
-        title: '暂无本地导出',
-        body: '录音结束后的实时文件，或从「设备端」Wi‑Fi 导出后，会出现在这里。',
-      );
-    }
-    _selected.removeWhere((path) => !widget.paths.contains(path));
+    final c = context.watch<RecorderController>();
+    bool selectable(String path) => !c
+        .recordingView(
+          RecordingReference(fileId: c.fileIdFromPath(path), path: path),
+        )
+        .audioLocked;
+    _selected.removeWhere(
+      (path) => !widget.paths.contains(path) || !selectable(path),
+    );
+    final selectablePaths = widget.paths.where(selectable).toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            if (_selecting) ...[
-              TextButton(
-                onPressed: _saving || _deleting
-                    ? null
-                    : () => setState(() => _selected.addAll(widget.paths)),
-                child: const Text('全选'),
-              ),
-              TextButton(
-                onPressed: _saving || _deleting || _selected.isEmpty
-                    ? null
-                    : () => setState(_selected.clear),
-                child: const Text('清空'),
-              ),
-              const Spacer(),
-              Text(
-                '已选 ${_selected.length} 项',
-                style: const TextStyle(
-                  color: AppColors.textMuted,
-                  fontSize: 12,
-                ),
-              ),
-            ] else ...[
-              const Spacer(),
-              TextButton.icon(
-                onPressed: _toggleSelecting,
-                icon: const Icon(Icons.drive_file_move_outline, size: 18),
-                label: const Text('批量管理'),
-              ),
-            ],
-          ],
-        ),
-        if (_selecting) ...[
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: _selected.isEmpty || _saving || _deleting
-                      ? null
-                      : () => _saveSelected(context),
-                  icon: _saving
-                      ? const SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.save_alt_rounded, size: 18),
-                  label: Text(_saving ? '保存中…' : '保存所选'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.coral,
-                    foregroundColor: Colors.white,
-                  ),
-                  onPressed: _selected.isEmpty || _saving || _deleting
-                      ? null
-                      : () => _deleteSelected(context),
-                  icon: _deleting
-                      ? const SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.delete_outline_rounded, size: 18),
-                  label: Text(_deleting ? '删除中…' : '删除所选'),
-                ),
-              ),
-              IconButton(
-                tooltip: '取消选择',
-                onPressed: _saving || _deleting ? null : _toggleSelecting,
-                icon: const Icon(Icons.close_rounded),
-              ),
-            ],
+        if (_selecting)
+          _SelectionToolbar(
+            count: _selected.length,
+            allSelected:
+                selectablePaths.isNotEmpty &&
+                _selected.length == selectablePaths.length,
+            saving: _saving,
+            saveLabel: _saving ? '保存中…' : '保存所选',
+            onSelectAll: _saving || _deleting || selectablePaths.isEmpty
+                ? null
+                : () => setState(() => _selected.addAll(selectablePaths)),
+            onClear: _saving || _deleting || _selected.isEmpty
+                ? null
+                : () => setState(_selected.clear),
+            onCancel: _saving || _deleting ? null : _toggleSelecting,
+            onSave: _selected.isEmpty || _saving || _deleting
+                ? null
+                : () => _saveSelected(context),
+            onDelete: _selected.isEmpty || _saving || _deleting
+                ? null
+                : () => _deleteSelected(context),
+            deleting: _deleting,
           ),
-        ],
-        const SizedBox(height: 4),
         Expanded(
-          child: ListView.separated(
-            padding: const EdgeInsets.only(bottom: 88),
-            itemCount: widget.paths.length,
-            separatorBuilder: (_, _) =>
-                const Divider(height: 1, color: AppColors.border),
-            itemBuilder: (context, i) {
-              final path = widget.paths[i];
-              return _LocalExportCard(
-                path: path,
-                selecting: _selecting,
-                selected: _selected.contains(path),
-                onSelected: () => setState(() {
-                  if (!_selected.add(path)) _selected.remove(path);
-                }),
-              );
-            },
+          child: RefreshIndicator(
+            key: const ValueKey('local-recordings-refresh'),
+            onRefresh: c.refreshLocalFiles,
+            notificationPredicate: (notification) =>
+                !_selecting &&
+                !_saving &&
+                !_deleting &&
+                !c.isLiveSession &&
+                !c.isExporting &&
+                !c.needsWifiJoin &&
+                notification.depth == 0 &&
+                notification.metrics.axis == Axis.vertical,
+            child: widget.paths.isEmpty
+                ? const _ScrollableHint(
+                    hint: _Hint(
+                      icon: Icons.folder_open_rounded,
+                      title: '暂无本地录音',
+                      body: '用设备开始录音，或在「设备端」下载已有录音。',
+                    ),
+                  )
+                : ListView.separated(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    key: const PageStorageKey('local-recordings-scroll'),
+                    padding: const EdgeInsets.only(bottom: 20),
+                    itemCount: widget.paths.length,
+                    separatorBuilder: (_, _) =>
+                        const Divider(height: 1, color: AppColors.border),
+                    itemBuilder: (context, i) {
+                      final path = widget.paths[i];
+                      return _LocalExportCard(
+                        path: path,
+                        selecting: _selecting,
+                        selected: _selected.contains(path),
+                        onSelected: _saving || _deleting || !selectable(path)
+                            ? null
+                            : () => setState(() {
+                                if (!_selected.add(path)) {
+                                  _selected.remove(path);
+                                }
+                              }),
+                        onLongPress: _saving || _deleting || !selectable(path)
+                            ? null
+                            : () {
+                                HapticFeedback.selectionClick();
+                                setState(() {
+                                  _selecting = true;
+                                  _selected.add(path);
+                                });
+                              },
+                      );
+                    },
+                  ),
           ),
         ),
       ],
     );
   }
+}
+
+class _SelectionToolbar extends StatelessWidget {
+  const _SelectionToolbar({
+    required this.count,
+    required this.saveLabel,
+    required this.allSelected,
+    this.onSelectAll,
+    this.onClear,
+    this.onCancel,
+    this.onSave,
+    this.onDelete,
+    this.saving = false,
+    this.deleting = false,
+  });
+  final int count;
+  final String saveLabel;
+  final bool allSelected;
+  final VoidCallback? onSelectAll;
+  final VoidCallback? onClear;
+  final VoidCallback? onCancel;
+  final VoidCallback? onSave;
+  final VoidCallback? onDelete;
+  final bool saving;
+  final bool deleting;
+
+  Widget _progress() => const SizedBox.square(
+    dimension: 20,
+    child: CircularProgressIndicator(strokeWidth: 2),
+  );
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final compact =
+          constraints.maxWidth < 340 ||
+          MediaQuery.textScalerOf(context).scale(14) > 18;
+      final textButtonStyle = TextButton.styleFrom(
+        minimumSize: const Size(44, 48),
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+      );
+      final iconButtonStyle = IconButton.styleFrom(
+        minimumSize: const Size.square(48),
+        visualDensity: VisualDensity.standard,
+      );
+      return Row(
+        key: const ValueKey('recording-selection-toolbar'),
+        children: [
+          if (compact)
+            IconButton(
+              tooltip: allSelected ? '清空' : '全选',
+              style: iconButtonStyle,
+              onPressed: allSelected ? onClear : onSelectAll,
+              icon: Icon(
+                allSelected ? Icons.deselect_rounded : Icons.select_all_rounded,
+              ),
+            )
+          else ...[
+            TextButton(
+              style: textButtonStyle,
+              onPressed: onSelectAll,
+              child: const Text('全选'),
+            ),
+            TextButton(
+              style: textButtonStyle,
+              onPressed: onClear,
+              child: const Text('清空'),
+            ),
+          ],
+          Expanded(
+            child: Semantics(
+              label: '已选 $count 项',
+              excludeSemantics: true,
+              child: Text(
+                compact ? '$count 项' : '已选 $count 项',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: saveLabel,
+            style: iconButtonStyle,
+            onPressed: onSave,
+            icon: saving ? _progress() : const Icon(Icons.save_alt_rounded),
+          ),
+          IconButton(
+            tooltip: deleting ? '删除中…' : '删除所选',
+            onPressed: onDelete,
+            style: iconButtonStyle,
+            color: AppColors.coral,
+            icon: deleting
+                ? _progress()
+                : const Icon(Icons.delete_outline_rounded),
+          ),
+          IconButton(
+            tooltip: '取消选择',
+            style: iconButtonStyle,
+            onPressed: onCancel,
+            icon: const Icon(Icons.close_rounded),
+          ),
+        ],
+      );
+    },
+  );
 }
 
 class _DeviceFilesTab extends StatelessWidget {
@@ -419,150 +504,141 @@ class _DeviceFilesTab extends StatelessWidget {
     final c = context.watch<RecorderController>();
     final downloadableCount = c.unexportedFiles.length;
     final selectedDownloadableCount = c.selectedUnexportedFiles.length;
+    final selectedLocked = c.selectedFileIds.any(
+      (id) => c
+          .recordingView(
+            RecordingReference(fileId: id, path: c.localPathFor(id)),
+          )
+          .audioLocked,
+    );
+    final anyDownloadLocked = c.unexportedFiles.any(
+      (file) =>
+          c.recordingView(RecordingReference(fileId: file.fileId)).audioLocked,
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (!c.selecting)
-          Row(
-            children: [
-              Expanded(
-                child: AccentButton(
-                  label: downloadableCount == 0 ? '全部已导出' : '全部导出（Wi‑Fi）',
-                  icon: downloadableCount == 0
-                      ? Icons.download_done_rounded
-                      : Icons.download_rounded,
-                  color: AppColors.mint,
-                  onPressed: c.connected && downloadableCount > 0 && !busy
-                      ? () => startWifiExport(context, c)
-                      : null,
-                ),
-              ),
-              if (c.files.isNotEmpty) ...[
-                const SizedBox(width: 4),
-                TextButton.icon(
-                  onPressed: busy ? null : c.toggleSelecting,
-                  icon: const Icon(Icons.checklist_rounded, size: 18),
-                  label: const Text('批量管理'),
-                ),
-              ],
-              IconButton(
-                tooltip: '刷新',
-                onPressed: c.connected && !busy ? c.listFiles : null,
-                icon: const Icon(Icons.refresh_rounded),
-              ),
-            ],
+        if (!c.selecting && downloadableCount > 0)
+          OutlinedButton.icon(
+            onPressed: c.connected && !busy && !anyDownloadLocked
+                ? () => startWifiExport(context, c)
+                : null,
+            icon: const Icon(Icons.wifi_rounded),
+            label: const Text('通过 Wi-Fi 下载全部'),
           ),
-        if (c.selecting && c.files.isNotEmpty) ...[
-          Row(
-            children: [
-              TextButton(
-                onPressed: busy ? null : c.selectAllFiles,
-                child: const Text('全选'),
-              ),
-              TextButton(
-                onPressed: busy || c.selectedFileIds.isEmpty
-                    ? null
-                    : c.clearSelection,
-                child: const Text('清空'),
-              ),
-              const Spacer(),
-              Text(
-                '已选 ${c.selectedFileIds.length} 项',
-                style: const TextStyle(
-                  color: AppColors.textMuted,
-                  fontSize: 12,
-                ),
-              ),
-            ],
+        if (c.selecting && c.files.isNotEmpty)
+          _SelectionToolbar(
+            count: c.selectedFileIds.length,
+            allSelected:
+                c.files.isNotEmpty &&
+                c.files
+                    .where(
+                      (file) => !c
+                          .recordingView(
+                            RecordingReference(fileId: file.fileId),
+                          )
+                          .audioLocked,
+                    )
+                    .every((file) => c.selectedFileIds.contains(file.fileId)),
+            saveLabel: selectedDownloadableCount == 0 ? '所选已下载' : '下载所选',
+            onSelectAll: busy ? null : c.selectAllFiles,
+            onClear: busy || c.selectedFileIds.isEmpty
+                ? null
+                : c.clearSelection,
+            onCancel: busy ? null : c.toggleSelecting,
+            onSave: busy || selectedLocked || selectedDownloadableCount == 0
+                ? null
+                : () => startWifiExport(context, c),
+            onDelete: busy || selectedLocked || c.selectedFileIds.isEmpty
+                ? null
+                : () => _deleteSelected(context, c),
           ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: busy || selectedDownloadableCount == 0
-                      ? null
-                      : () => startWifiExport(context, c),
-                  icon: Icon(
-                    selectedDownloadableCount == 0
-                        ? Icons.download_done_rounded
-                        : Icons.download_rounded,
-                    size: 18,
-                  ),
-                  label: Text(
-                    selectedDownloadableCount == 0 ? '所选已导出' : '导出所选',
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.coral,
-                    foregroundColor: Colors.white,
-                  ),
-                  onPressed: busy || c.selectedFileIds.isEmpty
-                      ? null
-                      : () => _deleteSelected(context, c),
-                  icon: const Icon(Icons.delete_outline_rounded, size: 18),
-                  label: const Text('删除所选'),
-                ),
-              ),
-              IconButton(
-                tooltip: '取消选择',
-                onPressed: busy ? null : c.toggleSelecting,
-                icon: const Icon(Icons.close_rounded),
-              ),
-            ],
-          ),
-        ],
-        const SizedBox(height: 10),
+        if (c.selecting || downloadableCount > 0) const SizedBox(height: 10),
         Expanded(
-          child: !c.connected
-              ? const _Hint(
-                  icon: Icons.link_off_rounded,
-                  title: '未连接设备',
-                  body: '点右上角「扫描」连接 soundcore Work，即可列出设备端录音。',
-                )
-              : c.files.isEmpty
-              ? _Hint(
-                  icon: Icons.inbox_rounded,
-                  title: '设备上暂无录音',
-                  body: '进入本页会自动拉取列表，也可点右上角刷新。',
-                  productImage: 'assets/product/d3200_device_white.webp',
-                  action: AccentButton(
-                    label: '获取列表',
-                    expand: false,
-                    onPressed: busy ? null : c.listFiles,
+          child: RefreshIndicator(
+            key: const ValueKey('device-recordings-refresh'),
+            onRefresh: c.refreshDeviceFiles,
+            notificationPredicate: (notification) =>
+                c.connected &&
+                !busy &&
+                !c.selecting &&
+                notification.depth == 0 &&
+                notification.metrics.axis == Axis.vertical,
+            child: !c.connected
+                ? const _ScrollableHint(
+                    hint: _Hint(
+                      icon: Icons.link_off_rounded,
+                      title: '未连接设备',
+                      body: '点右上角「扫描」连接 soundcore Work，即可列出设备端录音。',
+                    ),
+                  )
+                : c.files.isEmpty
+                ? const _ScrollableHint(
+                    hint: _Hint(
+                      icon: Icons.inbox_rounded,
+                      title: '设备上暂无录音',
+                      body: '下拉刷新录音列表。',
+                      productImage: 'assets/product/d3200_device_white.webp',
+                    ),
+                  )
+                : ListView.separated(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    key: const PageStorageKey('device-recordings-scroll'),
+                    padding: const EdgeInsets.only(bottom: 20),
+                    itemCount: c.files.length,
+                    separatorBuilder: (_, _) =>
+                        const Divider(height: 1, color: AppColors.border),
+                    itemBuilder: (context, i) {
+                      final f = c.files[i];
+                      final selected = c.selectedFileIds.contains(f.fileId);
+                      final hasLocal = c.localPathFor(f.fileId) != null;
+                      final downloading = c.downloadingFileId == f.fileId;
+                      final locked = c
+                          .recordingView(
+                            RecordingReference(
+                              fileId: f.fileId,
+                              path: c.localPathFor(f.fileId),
+                            ),
+                          )
+                          .audioLocked;
+                      return _DeviceFileTile(
+                        file: f,
+                        selecting: c.selecting,
+                        selected: selected,
+                        hasLocal: hasLocal,
+                        downloading: downloading,
+                        onTap: c.selecting
+                            ? (busy || locked
+                                  ? null
+                                  : () => c.toggleFileSelected(f.fileId))
+                            : () => RecordingNavigation.open(
+                                context,
+                                RecordingReference(
+                                  fileId: f.fileId,
+                                  path: c.localPathFor(f.fileId),
+                                ),
+                              ),
+                        onLongPress: busy || locked
+                            ? null
+                            : () {
+                                HapticFeedback.selectionClick();
+                                if (!c.selecting) {
+                                  c.selectOnly(f.fileId);
+                                } else if (!selected) {
+                                  c.toggleFileSelected(f.fileId);
+                                }
+                              },
+                        onExport: busy || hasLocal || locked
+                            ? null
+                            : () => c.downloadFileOverBle(f),
+                        onDelete: busy || locked
+                            ? null
+                            : () => c.deleteFile(f.fileId),
+                      );
+                    },
                   ),
-                )
-              : ListView.separated(
-                  padding: const EdgeInsets.only(bottom: 88),
-                  itemCount: c.files.length,
-                  separatorBuilder: (_, _) =>
-                      const Divider(height: 1, color: AppColors.border),
-                  itemBuilder: (context, i) {
-                    final f = c.files[i];
-                    final selected = c.selectedFileIds.contains(f.fileId);
-                    final hasLocal = c.localPathFor(f.fileId) != null;
-                    final downloading = c.downloadingFileId == f.fileId;
-                    return _DeviceFileTile(
-                      file: f,
-                      selecting: c.selecting,
-                      selected: selected,
-                      hasLocal: hasLocal,
-                      downloading: downloading,
-                      onTap: c.selecting
-                          ? () => c.toggleFileSelected(f.fileId)
-                          : null,
-                      onExport: busy || hasLocal
-                          ? null
-                          : () => c.downloadFileOverBle(f),
-                      onDelete: busy ? null : () => c.deleteFile(f.fileId),
-                    );
-                  },
-                ),
+          ),
         ),
       ],
     );
@@ -575,601 +651,120 @@ class _LocalExportCard extends StatelessWidget {
     this.selecting = false,
     this.selected = false,
     this.onSelected,
+    this.onLongPress,
   });
 
   final String path;
   final bool selecting;
   final bool selected;
   final VoidCallback? onSelected;
-
-  Future<void> _rename(
-    BuildContext context,
-    RecorderController controller,
-  ) async {
-    final input = TextEditingController(
-      text: ExportCatalog.editableLabelFromPath(path),
-    );
-    String? validationError;
-    final label = await showDialog<String>(
-      context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          titlePadding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
-          contentPadding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
-          actionsPadding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-          title: const Text(
-            '重命名录音',
-            style: TextStyle(
-              color: AppColors.textPrimary,
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              TextField(
-                controller: input,
-                autofocus: true,
-                maxLength: 100,
-                decoration: InputDecoration(
-                  labelText: '文件名',
-                  counterText: '',
-                  errorText: validationError,
-                  isDense: true,
-                ),
-                onSubmitted: (value) {
-                  try {
-                    ExportCatalog.renamedFileName(path, value);
-                    Navigator.pop(dialogContext, value);
-                  } on ArgumentError catch (error) {
-                    setDialogState(
-                      () => validationError = error.message?.toString(),
-                    );
-                  }
-                },
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                '录音编号和扩展名保持不变',
-                style: TextStyle(fontSize: 12, color: AppColors.textMuted),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () {
-                try {
-                  ExportCatalog.renamedFileName(path, input.text);
-                  Navigator.pop(dialogContext, input.text);
-                } on ArgumentError catch (error) {
-                  setDialogState(
-                    () => validationError = error.message?.toString(),
-                  );
-                }
-              },
-              child: const Text('重命名'),
-            ),
-          ],
-        ),
-      ),
-    );
-    FocusManager.instance.primaryFocus?.unfocus();
-    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
-    input.dispose();
-    if (label == null || !context.mounted) return;
-
-    try {
-      await controller.renameLocalExport(path, label);
-    } catch (error) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('重命名失败：$error')));
-    }
-  }
-
-  Future<void> _saveRecording(
-    BuildContext context,
-    RecorderController controller,
-  ) async {
-    try {
-      // iOS does not expose a directory/save-location picker through
-      // file_selector. Its share sheet provides the native "Save to Files"
-      // action and supports the optional transcript sidecar as a second file.
-      if (Platform.isIOS) {
-        await _shareRecording(
-          context,
-          controller,
-          title: '保存录音',
-          failureLabel: '保存',
-        );
-        return;
-      }
-
-      final destination = await getDirectoryPath(
-        confirmButtonText: '保存',
-        canCreateDirectories: true,
-      );
-      if (destination == null) return;
-      final result = await controller.saveLocalCopies([path], destination);
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            result.failed.isEmpty
-                ? '已保存录音${result.transcripts > 0 ? '和转写文本' : ''}'
-                : '保存失败：${result.failed.join('\n')}',
-          ),
-        ),
-      );
-    } catch (error) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('保存失败：$error')));
-    }
-  }
-
-  Future<void> _shareRecording(
-    BuildContext context,
-    RecorderController controller, {
-    String title = '分享录音',
-    String failureLabel = '分享',
-  }) async {
-    final name = path.split('/').last;
-    try {
-      final paths = await controller.prepareLocalSharePaths([path]);
-      if (paths.isEmpty) throw StateError('录音文件不存在');
-      if (!context.mounted) return;
-      final box = context.findRenderObject() as RenderBox?;
-      final origin = box == null
-          ? null
-          : box.localToGlobal(Offset.zero) & box.size;
-      await SharePlus.instance.share(
-        ShareParams(
-          files: paths.map(XFile.new).toList(),
-          title: title,
-          subject: paths.length > 1 ? '$name 录音及转写' : '$name 录音',
-          sharePositionOrigin: origin,
-        ),
-      );
-    } catch (error) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('$failureLabel失败：$error')));
-    }
-  }
-
-  Future<void> _confirmRetranscribe(
-    BuildContext context,
-    RecorderController controller,
-  ) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('重新转写？'),
-        content: const Text('当前转写文本和自定义说话人姓名将被新的转写结果替换。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('重新转写'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed == true && context.mounted) {
-      await controller.transcribeLocalFile(path);
-    }
-  }
-
-  Future<void> _renameSpeaker(
-    BuildContext context,
-    RecorderController controller,
-    TranscriptSpeaker speaker,
-  ) async {
-    final name = await showDialog<String>(
-      context: context,
-      builder: (_) => _SpeakerRenameDialog(initialName: speaker.displayLabel),
-    );
-    FocusManager.instance.primaryFocus?.unfocus();
-    await SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
-    if (name == null || !context.mounted) return;
-
-    try {
-      await controller.renameTranscriptSpeaker(path, speaker.id, name);
-    } catch (error) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('说话人重命名失败：$error')));
-    }
-  }
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
     final c = context.watch<RecorderController>();
-    final name = path.split('/').last;
-    final fileId = c.fileIdFromPath(path);
+    final reference = RecordingReference(
+      fileId: c.fileIdFromPath(path),
+      path: path,
+    );
+    final recording = c.recordingView(reference);
+    final text = FilesBody.cleanTranscript(recording.text);
     final loaded = c.playingPath == path;
-    final rawText = c.transcriptForPath(path);
-    final text = rawText == null ? null : FilesBody.cleanTranscript(rawText);
-    final hasText = text != null && text.isNotEmpty;
-    final expanded = c.expandedLocalPath == path;
     final duration = FilesBody.formatDuration(c.localDurationForPath(path));
-    final transcribingThis = c.transcribingPath == path;
-    final transcriptionProgress = transcribingThis
-        ? c.fileTranscriptionProgress
+    final status = recording.audioLocked
+        ? (recording.live ? '录音中' : '正在保存')
+        : recording.processing
+        ? '处理中'
+        : recording.error != null
+        ? '处理失败'
+        : text.isNotEmpty
+        ? '已转写'
         : null;
-    final speakers = c.transcriptSpeakersForPath(path);
-
-    final backgroundColor = selected
-        ? AppColors.mint.withValues(alpha: 0.08)
-        : loaded || expanded
-        ? AppColors.accent.withValues(alpha: 0.06)
-        : Colors.transparent;
     return Material(
-      color: backgroundColor,
+      color: selected
+          ? AppColors.mint.withValues(alpha: 0.08)
+          : Colors.transparent,
       child: InkWell(
-        onTap: selecting ? onSelected : () => c.toggleLocalExpanded(path),
+        key: ValueKey('recording-row-$path'),
+        onLongPress: onLongPress,
+        onTap: selecting
+            ? (recording.audioLocked ? null : onSelected)
+            : () => RecordingNavigation.open(context, reference),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 16),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  if (selecting) ...[
-                    Checkbox(
-                      value: selected,
-                      onChanged: (_) => onSelected?.call(),
-                    ),
-                    const SizedBox(width: 4),
-                  ],
-                  Icon(
-                    name.endsWith('.opus') || name.endsWith('.wav')
-                        ? Icons.audio_file_rounded
-                        : Icons.insert_drive_file_rounded,
-                    color: loaded ? AppColors.accent : AppColors.mint,
-                    size: 22,
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          name,
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: loaded
-                                ? AppColors.accent
-                                : AppColors.textPrimary,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        Text(
-                          transcribingThis
-                              ? '$duration • 转写中'
-                              : hasText
-                              ? '$duration • 已转写'
-                              : duration,
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: transcribingThis || hasText
-                                ? AppColors.violet
-                                : AppColors.textMuted,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (!selecting) ...[
-                    IconButton(
-                      tooltip: hasText ? '保存录音和转写' : '保存录音',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () => _saveRecording(context, c),
-                      icon: const Icon(Icons.file_download_outlined, size: 19),
-                    ),
-                    IconButton(
-                      tooltip: hasText ? '分享录音和转写' : '分享录音',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () => _shareRecording(context, c),
-                      icon: const Icon(Icons.ios_share_rounded, size: 19),
-                    ),
-                    IconButton(
-                      tooltip: '重命名',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () => _rename(context, c),
-                      icon: const Icon(Icons.edit_outlined, size: 19),
-                    ),
-                    Icon(
-                      expanded
-                          ? Icons.expand_less_rounded
-                          : Icons.expand_more_rounded,
-                      color: AppColors.textMuted,
-                    ),
-                  ],
-                ],
-              ),
-              if (hasText && !expanded && !selecting) ...[
-                const SizedBox(height: 8),
-                Text(
-                  text,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    height: 1.4,
-                    color: AppColors.textPrimary,
+              if (selecting)
+                Checkbox(
+                  value: selected,
+                  onChanged: recording.audioLocked || onSelected == null
+                      ? null
+                      : (_) => onSelected?.call(),
+                )
+              else
+                Padding(
+                  padding: const EdgeInsets.only(top: 3, right: 12),
+                  child: Icon(
+                    loaded
+                        ? Icons.graphic_eq_rounded
+                        : Icons.audio_file_outlined,
+                    color: loaded ? AppColors.accent : AppColors.textMuted,
+                    size: 24,
                   ),
                 ),
-              ],
-              if (expanded && !selecting) ...[
-                const SizedBox(height: 8),
-                const Divider(height: 1, color: AppColors.border),
-                if (transcriptionProgress != null) ...[
-                  const SizedBox(height: 12),
-                  _FileTranscriptionProgress(progress: transcriptionProgress),
-                ],
-                if (hasText) ...[
-                  SizedBox(height: transcriptionProgress == null ? 10 : 6),
-                  if (speakers.isNotEmpty || c.sttConfigured)
-                    Row(
-                      key: ValueKey('transcript-speaker-toolbar-$path'),
-                      children: [
-                        if (speakers.isNotEmpty)
-                          Expanded(
-                            child: SingleChildScrollView(
-                              key: ValueKey('speaker-label-scroll-$path'),
-                              scrollDirection: Axis.horizontal,
-                              child: Row(
-                                children: [
-                                  for (
-                                    var index = 0;
-                                    index < speakers.length;
-                                    index++
-                                  ) ...[
-                                    if (index > 0) const SizedBox(width: 6),
-                                    ActionChip(
-                                      key: ValueKey(
-                                        'speaker-label-$path-${speakers[index].id}',
-                                      ),
-                                      label: Text(speakers[index].displayLabel),
-                                      tooltip:
-                                          '重命名${speakers[index].displayLabel}',
-                                      visualDensity: VisualDensity.compact,
-                                      materialTapTargetSize:
-                                          MaterialTapTargetSize.shrinkWrap,
-                                      onPressed: c.transcribing
-                                          ? null
-                                          : () => _renameSpeaker(
-                                              context,
-                                              c,
-                                              speakers[index],
-                                            ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ),
-                          )
-                        else
-                          const Spacer(),
-                        if (speakers.isNotEmpty && c.sttConfigured)
-                          const SizedBox(width: 8),
-                        if (c.sttConfigured)
-                          TextButton.icon(
-                            key: ValueKey('retranscribe-$path'),
-                            onPressed: c.transcribing
-                                ? null
-                                : () => _confirmRetranscribe(context, c),
-                            icon: const Icon(Icons.refresh_rounded, size: 18),
-                            label: const Text(
-                              '重新转写',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                          ),
-                      ],
-                    ),
-                  const SizedBox(height: 6),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 220),
-                    child: SingleChildScrollView(
-                      child: SelectableText(
-                        text,
-                        style: const TextStyle(
-                          fontSize: 13,
-                          height: 1.45,
-                          color: AppColors.textPrimary,
-                        ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      recording.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
                       ),
                     ),
-                  ),
-                ] else ...[
-                  const SizedBox(height: 8),
-                  if (c.sttConfigured) ...[
-                    if (transcriptionProgress == null)
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton.icon(
-                          onPressed: c.transcribing
-                              ? null
-                              : () => c.transcribeLocalFile(path),
-                          icon: const Icon(Icons.subtitles_outlined, size: 16),
-                          label: const Text('转写此文件'),
-                        ),
-                      ),
-                  ] else
-                    const Text(
-                      '在「设置」配置 API Key 后可转写此文件',
+                    const SizedBox(height: 4),
+                    Text(
+                      '$duration${status == null ? '' : ' · $status'}',
                       style: TextStyle(
                         fontSize: 12,
-                        color: AppColors.textMuted,
+                        color: recording.error != null
+                            ? AppColors.coral
+                            : AppColors.textSecondary,
                       ),
                     ),
-                ],
-                const SizedBox(height: 8),
-                InlinePlayer(path: path, fileId: fileId),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SpeakerRenameDialog extends StatefulWidget {
-  const _SpeakerRenameDialog({required this.initialName});
-
-  final String initialName;
-
-  @override
-  State<_SpeakerRenameDialog> createState() => _SpeakerRenameDialogState();
-}
-
-class _SpeakerRenameDialogState extends State<_SpeakerRenameDialog> {
-  late final TextEditingController _input;
-  String? _validationError;
-
-  @override
-  void initState() {
-    super.initState();
-    _input = TextEditingController(text: widget.initialName);
-  }
-
-  @override
-  void dispose() {
-    _input.dispose();
-    super.dispose();
-  }
-
-  String _normalizeName(String value) {
-    var name = value.trim();
-    name = name.replaceFirst(RegExp(r'[:：]\s*$'), '').trimRight();
-    if (name.isEmpty) throw ArgumentError('请输入说话人姓名');
-    if (name.runes.length > 40) {
-      throw ArgumentError('说话人姓名不能超过 40 个字符');
-    }
-    return name;
-  }
-
-  void _submit(String value) {
-    try {
-      Navigator.pop(context, _normalizeName(value));
-    } on ArgumentError catch (error) {
-      setState(() => _validationError = error.message?.toString());
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('重命名说话人'),
-      content: TextField(
-        key: const ValueKey('speaker-name-input'),
-        controller: _input,
-        autofocus: true,
-        maxLength: 40,
-        decoration: InputDecoration(
-          labelText: '说话人姓名',
-          helperText: '姓名后的冒号会自动添加',
-          counterText: '',
-          errorText: _validationError,
-          isDense: true,
-        ),
-        onSubmitted: _submit,
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () => _submit(_input.text),
-          child: const Text('保存'),
-        ),
-      ],
-    );
-  }
-}
-
-class _FileTranscriptionProgress extends StatelessWidget {
-  const _FileTranscriptionProgress({required this.progress});
-
-  final SttFileProgress progress;
-
-  String get _label {
-    switch (progress.stage) {
-      case SttFileStage.preparing:
-        return '正在准备音频…';
-      case SttFileStage.uploading:
-        final fraction = progress.fraction;
-        return fraction == null ? '正在上传…' : '正在上传 ${(fraction * 100).round()}%';
-      case SttFileStage.queued:
-        return '等待转写…';
-      case SttFileStage.processing:
-        return '正在转写…';
-      case SttFileStage.fetching:
-        return '正在获取结果…';
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final value = progress.stage == SttFileStage.uploading
-        ? progress.fraction
-        : null;
-    return Container(
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: AppColors.violet.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              const Icon(
-                Icons.subtitles_outlined,
-                size: 17,
-                color: AppColors.violet,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                _label,
-                style: const TextStyle(
-                  color: AppColors.violet,
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
+                    if (text.isNotEmpty && !selecting) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        text,
+                        key: ValueKey('recording-preview-$path'),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          height: 1.45,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               ),
+              if (!selecting)
+                const Padding(
+                  padding: EdgeInsets.only(top: 3, left: 8),
+                  child: Icon(
+                    Icons.chevron_right_rounded,
+                    color: AppColors.textMuted,
+                    size: 20,
+                  ),
+                ),
             ],
           ),
-          const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(3),
-            child: LinearProgressIndicator(
-              value: value,
-              minHeight: 4,
-              color: AppColors.violet,
-              backgroundColor: AppColors.violet.withValues(alpha: 0.14),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -1273,7 +868,10 @@ class _ExportBanner extends StatelessWidget {
                   ? '文件 ${p.currentFileIndex.clamp(0, p.totalFiles) + (p.phase == ExportPhase.transferring && p.currentFileIndex < p.totalFiles ? 1 : 0)} / ${p.totalFiles}'
                         '${p.bytesExpected > 0 ? ' · ${(p.bytesReceived / 1024).toStringAsFixed(1)} / ${(p.bytesExpected / 1024).toStringAsFixed(1)} KB' : ''}'
                   : '',
-              style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 11,
+              ),
             ),
           ],
           if (p.savedPaths.isNotEmpty) ...[
@@ -1281,7 +879,10 @@ class _ExportBanner extends StatelessWidget {
             Text(
               '已保存到应用 Documents/AnkerRecorder/exports\n'
               '${p.savedPaths.map((e) => e.split('/').last).join(', ')}',
-              style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 11,
+              ),
             ),
           ],
           if (p.error != null) ...[
@@ -1574,7 +1175,7 @@ class _WifiJoinSheetState extends State<_WifiJoinSheet> {
             const Text(
               '加入成功后会自动开始导出；也可手动点下方按钮。'
               '检测仅检查本机网络，不会提前占用设备的 WebSocket 端口。',
-              style: TextStyle(color: AppColors.textMuted, fontSize: 11),
+              style: TextStyle(color: AppColors.textSecondary, fontSize: 11),
             ),
             // Only shown before the first (automatic) attempt — once that's
             // resolved (success navigates away; failure shows p.error below
@@ -1758,7 +1359,10 @@ class _CredRow extends StatelessWidget {
           width: 72,
           child: Text(
             label,
-            style: const TextStyle(color: AppColors.textMuted, fontSize: 12),
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 12,
+            ),
           ),
         ),
         Expanded(
@@ -1793,6 +1397,7 @@ class _DeviceFileTile extends StatelessWidget {
     required this.hasLocal,
     required this.downloading,
     this.onTap,
+    this.onLongPress,
     this.onExport,
     this.onDelete,
   });
@@ -1803,6 +1408,7 @@ class _DeviceFileTile extends StatelessWidget {
   final bool hasLocal;
   final bool downloading;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
   final VoidCallback? onExport;
   final VoidCallback? onDelete;
 
@@ -1813,6 +1419,8 @@ class _DeviceFileTile extends StatelessWidget {
           ? AppColors.mint.withValues(alpha: 0.08)
           : Colors.transparent,
       child: InkWell(
+        key: ValueKey('device-recording-row-${file.fileId}'),
+        onLongPress: onLongPress,
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
@@ -1847,6 +1455,8 @@ class _DeviceFileTile extends StatelessWidget {
                   children: [
                     Text(
                       file.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         fontWeight: FontWeight.w600,
                         color: AppColors.textPrimary,
@@ -1854,11 +1464,10 @@ class _DeviceFileTile extends StatelessWidget {
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      'id ${file.fileId} · ${file.sizeLabel}'
-                      '${hasLocal ? ' · 已导出' : ''}',
+                      '${file.sizeLabel}${hasLocal ? ' · 已下载' : ''}',
                       style: const TextStyle(
                         fontSize: 12,
-                        color: AppColors.textMuted,
+                        color: AppColors.textSecondary,
                         fontFeatures: [FontFeature.tabularFigures()],
                       ),
                     ),
@@ -1907,19 +1516,29 @@ class _DeviceFileTile extends StatelessWidget {
   }
 }
 
+/// Empty lists must still accept the same pull gesture as populated lists.
+class _ScrollableHint extends StatelessWidget {
+  const _ScrollableHint({required this.hint});
+  final Widget hint;
+
+  @override
+  Widget build(BuildContext context) => CustomScrollView(
+    physics: const AlwaysScrollableScrollPhysics(),
+    slivers: [SliverFillRemaining(hasScrollBody: false, child: hint)],
+  );
+}
+
 class _Hint extends StatelessWidget {
   const _Hint({
     required this.icon,
     required this.title,
     required this.body,
-    this.action,
     this.productImage,
   });
 
   final IconData icon;
   final String title;
   final String body;
-  final Widget? action;
   final String? productImage;
 
   @override
@@ -1944,9 +1563,11 @@ class _Hint extends StatelessWidget {
           Text(
             body,
             textAlign: TextAlign.center,
-            style: const TextStyle(color: AppColors.textMuted, fontSize: 13),
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 13,
+            ),
           ),
-          if (action != null) ...[const SizedBox(height: 16), action!],
         ],
       ),
     );

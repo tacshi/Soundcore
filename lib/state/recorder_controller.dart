@@ -12,6 +12,8 @@ import '../ai/soniox_stt.dart';
 import '../ai/soniox_stt_stream.dart';
 import '../ai/soniox_languages.dart';
 import '../ai/stt_types.dart';
+import '../ai/apple_speech.dart';
+import '../ai/speech_provider.dart';
 import '../audio/audio_duration.dart';
 import '../audio/ogg_opus.dart';
 import '../audio/opus_pcm_decoder.dart';
@@ -29,6 +31,10 @@ import 'app_settings_store.dart';
 import 'device_store.dart';
 import 'export_catalog.dart';
 import 'transcript_store.dart';
+import 'recording.dart';
+
+export 'recording.dart';
+export '../ai/speech_provider.dart';
 
 enum AppPhase { idle, scanning, connecting, ready, busy }
 
@@ -45,8 +51,12 @@ class RecorderController extends ChangeNotifier {
     BleService? ble,
     bool loadPersistedState = true,
     PersistedDeviceLoader? persistedDeviceLoader,
+    AppleSpeechService? appleSpeech,
+    SonioxSttService? sonioxSpeech,
     this.recordingShortcutScanTimeout = const Duration(seconds: 30),
   }) : _ble = ble ?? BleService(),
+       _appleSpeech = appleSpeech ?? AppleSpeechService(),
+       _sonioxStt = sonioxSpeech ?? SonioxSttService(),
        _persistedDeviceLoader = persistedDeviceLoader ?? DeviceStore.load {
     _subs.add(
       _ble.scanResults.listen((list) {
@@ -104,6 +114,8 @@ class RecorderController extends ChangeNotifier {
           selectedFileIds.clear();
           selecting = false;
           recording = false;
+          _snapshotLiveText();
+          _currentRecording?.active = false;
           _recordWireStatus = 0;
           if (!wifiHandoff) {
             encryptReady = false;
@@ -113,6 +125,7 @@ class RecorderController extends ChangeNotifier {
           _stopBatteryPoll();
           _fileListPageTimeout?.cancel();
           _loadingFileListPages = false;
+          _completeFileRefresh();
           unawaited(_realtime.stop());
           realtimeState = const RealtimeStreamState();
           unawaited(_finishStreamStt());
@@ -169,8 +182,12 @@ class RecorderController extends ChangeNotifier {
     );
     _subs.add(_realtime.stateStream.listen(_onRealtimeState));
     _wirePlayer();
+    _settingsReady = !loadPersistedState;
+    _settingsLoaded = loadPersistedState
+        ? _loadPersistedSettings().whenComplete(() => _settingsReady = true)
+        : Future<void>.value();
     if (loadPersistedState) {
-      unawaited(_loadPersistedSettings());
+      unawaited(_settingsLoaded);
       unawaited(_loadLocalExports());
       _transcriptsLoaded = _loadPersistedTranscripts();
     }
@@ -188,9 +205,8 @@ class RecorderController extends ChangeNotifier {
     autoTranscribe = s.autoTranscribe;
     autoRealtime = s.autoRealtime;
     transcriptLanguage = s.transcriptLanguage;
-    translationTargetLanguage = isSonioxLanguage(s.translationTargetLanguage)
-        ? s.translationTargetLanguage.toLowerCase()
-        : 'zh';
+    appleSourceLanguage = s.appleSourceLanguage;
+    translationTargetLanguage = s.translationTargetLanguage;
     ownerLanguage = isSonioxLanguage(s.ownerLanguage)
         ? s.ownerLanguage.toLowerCase()
         : 'zh';
@@ -202,12 +218,26 @@ class RecorderController extends ChangeNotifier {
       guestLanguage = 'en';
     }
     sttMode = autoTranscribe ? s.sttMode : SttDisplayMode.transcription;
+    await refreshAppleCapabilities();
+    if (_disposed) return;
+    speechProvider = initialSpeechProvider(
+      saved: s.speechProvider,
+      appleSupported: appleCapabilities.supported,
+      sonioxConfigured: _sonioxStt.isConfigured,
+    );
+    if (speechProvider == SttProvider.apple &&
+        sttMode == SttDisplayMode.conversation) {
+      sttMode = SttDisplayMode.transcription;
+    }
+    if (s.speechProvider == null) unawaited(_persistSettings());
     notifyListeners();
   }
 
   Future<void> _persistSettings() async {
     await AppSettingsStore.save(
       AppSettings(
+        speechProvider: speechProvider,
+        appleSourceLanguage: appleSourceLanguage,
         sonioxApiKey: _sonioxStt.apiKeyOverride,
         autoTranscribe: autoTranscribe,
         autoRealtime: autoRealtime,
@@ -218,6 +248,345 @@ class RecorderController extends ChangeNotifier {
         guestLanguage: guestLanguage,
       ),
     );
+  }
+
+  bool get appleSpeechReady =>
+      appleSourceLanguage.isNotEmpty &&
+      appleCapabilities.supported &&
+      appleCapabilities.speechStatus == SpeechResourceStatus.ready &&
+      !appleCapabilitiesLoading;
+
+  bool get appleTranslationAvailable =>
+      appleSourceLanguage.isNotEmpty &&
+      appleCapabilities.supported &&
+      appleCapabilities.translationStatus == SpeechResourceStatus.ready &&
+      !appleCapabilitiesLoading;
+
+  bool get conversationModeAvailable =>
+      autoTranscribe && speechProvider == SttProvider.soniox;
+
+  Future<void> refreshAppleCapabilities() async {
+    final revision = ++_capabilityRevision;
+    appleCapabilitiesLoading = true;
+    appleSetupError = null;
+    notifyListeners();
+    try {
+      var result = await _appleSpeech.capabilities(
+        sourceLanguage: appleSourceLanguage.isEmpty
+            ? null
+            : appleSourceLanguage,
+        targetLanguage: translationTargetLanguage,
+      );
+      if (_disposed || revision != _capabilityRevision) return;
+      if (appleSourceLanguage.isEmpty &&
+          result.suggestedSourceLanguage != null) {
+        appleSourceLanguage = result.suggestedSourceLanguage!;
+        result = await _appleSpeech.capabilities(
+          sourceLanguage: appleSourceLanguage,
+          targetLanguage: translationTargetLanguage,
+        );
+        if (_disposed || revision != _capabilityRevision) return;
+      }
+      appleCapabilities = result;
+    } catch (error) {
+      if (_disposed || revision != _capabilityRevision) return;
+      appleCapabilities = const AppleSpeechCapabilities.unsupported();
+      appleSetupError = _speechErrorMessage(error);
+    } finally {
+      if (!_disposed && revision == _capabilityRevision) {
+        appleCapabilitiesLoading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> prepareAppleLanguages() async {
+    if (appleLanguagePreparationBusy) return;
+    if (appleSourceLanguage.isEmpty) {
+      appleSetupError = '请选择录音语言';
+      notifyListeners();
+      return;
+    }
+    appleLanguagePreparationBusy = true;
+    appleSetupError = null;
+    notifyListeners();
+    try {
+      await _appleSpeech.prepareLanguages(
+        sourceLanguage: appleSourceLanguage,
+        targetLanguage: translationTargetLanguage,
+      );
+      if (_disposed) return;
+      await refreshAppleCapabilities();
+      await _persistSettings();
+    } catch (error) {
+      if (!_disposed) {
+        // Speech may have installed even if the optional translation pair failed.
+        await refreshAppleCapabilities();
+        appleSetupError = _speechErrorMessage(error);
+      }
+    } finally {
+      if (!_disposed) {
+        appleLanguagePreparationBusy = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  void setSpeechProvider(SttProvider provider) {
+    if (provider == speechProvider) return;
+    speechProvider = provider;
+    if (provider == SttProvider.apple &&
+        sttMode == SttDisplayMode.conversation) {
+      sttMode = SttDisplayMode.transcription;
+    }
+    notifyListeners();
+    unawaited(_persistSettings());
+    if (provider == SttProvider.apple) unawaited(refreshAppleCapabilities());
+  }
+
+  void setAppleSourceLanguage(String language) {
+    final code = language.trim();
+    if (appleSourceLanguage == code) return;
+    appleSourceLanguage = code;
+    unawaited(refreshAppleCapabilities());
+    unawaited(_persistSettings());
+  }
+
+  _SpeechConfiguration get _settingsConfiguration => _SpeechConfiguration(
+    provider: speechProvider,
+    sourceLanguage: speechProvider == SttProvider.apple
+        ? appleSourceLanguage
+        : transcriptLanguage,
+    targetLanguage: translationTargetLanguage,
+    ownerLanguage: ownerLanguage,
+    guestLanguage: guestLanguage,
+    mode: sttMode,
+    enabled: autoTranscribe,
+    appleReady: appleSpeechReady,
+    appleTranslationReady: appleTranslationAvailable,
+    sonioxKey: _sonioxStt.apiKey,
+  );
+
+  _RecordingSession? get _currentRecording =>
+      _recordingSessions[_currentSessionId];
+  bool get _liveProcessing =>
+      recording ||
+      realtimeState.active ||
+      streamingSttActive ||
+      _streamSttStarting ||
+      (_currentRecording?.finalizing ?? false);
+  // Final BLE/file callbacks can arrive after capture and stream flags clear.
+  // They still belong to this take and must never adopt the next provider.
+  _SpeechConfiguration get _activeConfiguration =>
+      _liveConfiguration ?? _settingsConfiguration;
+  bool _isConfigured(_SpeechConfiguration config) =>
+      config.provider == SttProvider.apple
+      ? config.appleReady && config.sourceLanguage.isNotEmpty
+      : config.sonioxKey?.isNotEmpty == true;
+  bool get _activeSttConfigured => _isConfigured(_activeConfiguration);
+  bool get _activeAutoTranscribe => _activeConfiguration.enabled;
+  String get activeTranslationTargetLanguage =>
+      _activeConfiguration.targetLanguage;
+  String get activeOwnerLanguage => _activeConfiguration.ownerLanguage;
+  String get activeGuestLanguage => _activeConfiguration.guestLanguage;
+
+  RecordingReference? get currentRecordingReference {
+    final session = _currentRecording;
+    if (session == null) return null;
+    return RecordingReference(
+      sessionId: session.id,
+      fileId: session.fileId,
+      path: session.path,
+    );
+  }
+
+  String _recordingKey({int? fileId, String? path}) {
+    final id = fileId ?? (path == null ? null : fileIdFromPath(path));
+    return id == null ? 'path:$path' : 'file:$id';
+  }
+
+  String _referenceKey(RecordingReference ref) {
+    final session = _recordingSessions[ref.sessionId];
+    return _recordingKey(
+      fileId: session?.fileId ?? ref.fileId,
+      path: session?.path ?? ref.path,
+    );
+  }
+
+  _RecordingSession? _sessionForReference(RecordingReference ref) {
+    if (ref.sessionId != null) return _recordingSessions[ref.sessionId];
+    final id =
+        ref.fileId ?? (ref.path == null ? null : fileIdFromPath(ref.path!));
+    for (final session in _recordingSessions.values.toList().reversed) {
+      if (id != null && session.fileId == id ||
+          ref.path != null && session.path == ref.path) {
+        return session;
+      }
+    }
+    return null;
+  }
+
+  RecordingViewData recordingView(RecordingReference ref) {
+    final session = _sessionForReference(ref);
+    final id =
+        session?.fileId ??
+        ref.fileId ??
+        (ref.path == null ? null : fileIdFromPath(ref.path!));
+    var path = id == null ? null : localPathsByFileId[id];
+    if (path == null && id != null) {
+      for (final candidate in exportedPaths) {
+        if (fileIdFromPath(candidate) == id) {
+          path = candidate;
+          break;
+        }
+      }
+    }
+    path ??= session?.path ?? ref.path;
+    final key = _recordingKey(fileId: id, path: path);
+    final metadata = _transcriptMetadata[key];
+    final stored = path == null
+        ? (id == null ? null : transcriptForFileId(id))
+        : transcriptForPath(path);
+    final current = session != null && session.id == _currentSessionId;
+    final readingLive = current && (session.active || session.finalizing);
+    final text = readingLive ? session.text : (stored ?? session?.text ?? '');
+    final savedTranslation = _recordingTranslations[key];
+    final translated = readingLive
+        ? session.translation
+        : (savedTranslation?.sourceRevision == metadata?.revision
+              ? savedTranslation
+              : null);
+    final label = path == null ? '' : ExportCatalog.editableLabelFromPath(path);
+    final title = label.isNotEmpty
+        ? label
+        : id == null
+        ? '当前录音'
+        : _recordingDateTitle(id);
+    return RecordingViewData(
+      reference: RecordingReference(
+        sessionId: ref.sessionId,
+        fileId: id,
+        path: path,
+      ),
+      path: path,
+      title: title,
+      text: text,
+      translation: translated ?? (stored == null ? session?.translation : null),
+      sourceLanguage:
+          metadata?.sourceLanguage ?? session?.configuration.sourceLanguage,
+      mode: session?.configuration.mode ?? SttDisplayMode.transcription,
+      provider:
+          metadata?.provider ??
+          session?.configuration.provider ??
+          speechProvider,
+      transcriptionEnabled: session?.configuration.enabled ?? autoTranscribe,
+      speechReady: _isConfigured(
+        session?.configuration ?? _settingsConfiguration,
+      ),
+      live: current && recording,
+      paused: session?.paused ?? false,
+      audioLocked:
+          (current && (recording || session.finalizing)) ||
+          _isRecordingAudioLocked(id, path),
+      processing: _fileJobKey == key || session?.finalizing == true,
+      error: _recordingErrors[key] ?? session?.error,
+      progress: _fileJobKey == key ? fileTranscriptionProgress : null,
+    );
+  }
+
+  String _recordingDateTitle(int id) {
+    final date = DateTime.fromMillisecondsSinceEpoch(id * 1000);
+    String pad(int value) => value.toString().padLeft(2, '0');
+    return '${date.year}/${pad(date.month)}/${pad(date.day)} ${pad(date.hour)}:${pad(date.minute)}';
+  }
+
+  bool _isRecordingAudioLocked(int? id, String? path) {
+    final current = _currentRecording;
+    final matches =
+        current != null &&
+        ((id != null && current.fileId == id) ||
+            (path != null && current.path == path));
+    return matches &&
+            (recording || realtimeState.active || current.finalizing) ||
+        (id != null && recording && realtimeState.fileId == id) ||
+        _finalizingRecordings.contains(_recordingKey(fileId: id, path: path));
+  }
+
+  void _requireFinishedRecording(String path) {
+    if (_isRecordingAudioLocked(fileIdFromPath(path), path)) {
+      throw StateError('录音保存后再试');
+    }
+  }
+
+  bool get fileProcessingBusy => _fileJobKey != null || _liveProcessing;
+
+  void _bindCurrentRecording({int? fileId, String? path}) {
+    final session = _currentRecording;
+    if (session == null) return;
+    // A previous take can finish asynchronously after the next one starts.
+    if (session.fileId != null && fileId != null && session.fileId != fileId) {
+      return;
+    }
+    session.fileId ??= fileId ?? (path == null ? null : fileIdFromPath(path));
+    if (path != null) session.path = path;
+  }
+
+  void _snapshotLiveText() {
+    final session = _currentRecording;
+    if (session == null) return;
+    session.text =
+        (transcriptPartial?.isNotEmpty == true
+                ? transcriptPartial!
+                : transcript)
+            .trim();
+    session.error = transcriptError;
+    final turns = translationTurns.where((turn) => turn.text.trim().isNotEmpty);
+    if (turns.isNotEmpty) {
+      session.translation = RecordingTranslation(
+        text: turns.map((turn) => turn.text.trim()).join('\n\n'),
+        sourceLanguage: session.configuration.sourceLanguage,
+        targetLanguage: session.configuration.targetLanguage,
+        provider: session.configuration.provider,
+        sourceRevision: 0,
+      );
+    }
+  }
+
+  void _saveLiveRecording(_RecordingSession session, {String? path}) {
+    final destination = path ?? session.path;
+    if (destination == null || session.text.isEmpty) return;
+    session.path = destination;
+    rememberTranscript(
+      destination,
+      session.text,
+      provider: session.configuration.provider,
+      sourceLanguage: session.configuration.sourceLanguage,
+    );
+    final translated = session.translation;
+    if (translated != null) {
+      final key = _recordingKey(path: destination);
+      _recordingTranslations[key] = RecordingTranslation(
+        text: translated.text,
+        sourceLanguage: translated.sourceLanguage,
+        targetLanguage: translated.targetLanguage,
+        provider: translated.provider,
+        sourceRevision: _transcriptMetadata[key]!.revision,
+      );
+      unawaited(_persistTranscripts());
+    }
+  }
+
+  String _speechErrorMessage(Object error) {
+    final code = error is PlatformException ? error.code : error.toString();
+    return switch (code) {
+      'unsupported' => '此设备不支持 Apple 设备端处理，请在设置中选择 Soniox',
+      'language_unsupported' => '不支持此语言，请更换语言',
+      'resources_missing' => '请在设置中下载所需语言',
+      'cancelled' => '处理已取消，可重试',
+      'busy' => '请等待当前处理完成后重试',
+      'audio_invalid' => '无法读取录音，请重新下载',
+      _ => '处理失败，请重试',
+    };
   }
 
   Future<void> _loadPersistedDevice() async {
@@ -434,6 +803,15 @@ class RecorderController extends ChangeNotifier {
         () => Map<String, String>.from(entry.value),
       );
     }
+    for (final entry in saved.metadata.entries) {
+      _transcriptMetadata.putIfAbsent(entry.key, () => entry.value);
+    }
+    for (final entry in saved.translations.entries) {
+      final metadata = _transcriptMetadata[entry.key];
+      if (metadata?.revision == entry.value.sourceRevision) {
+        _recordingTranslations.putIfAbsent(entry.key, () => entry.value);
+      }
+    }
     notifyListeners();
   }
 
@@ -444,19 +822,44 @@ class RecorderController extends ChangeNotifier {
       byFileId: transcriptsByFileId,
       aliasesByPath: speakerAliasesByPath,
       aliasesByFileId: speakerAliasesByFileId,
+      metadata: _transcriptMetadata,
+      translations: _recordingTranslations,
     );
   }
 
   void _onRealtimeState(RealtimeStreamState s) {
+    if (s.fileId != null || s.path != null) {
+      final owner = _sessionForReference(
+        RecordingReference(fileId: s.fileId, path: s.path),
+      );
+      if (owner != null && owner.id != _currentSessionId) {
+        if (s.path != null && s.bytesReceived > 0 && !s.active) {
+          _registerExportedPaths([s.path!]);
+          _saveLiveRecording(owner, path: s.path);
+          final key = _recordingKey(path: s.path);
+          _finalizingRecordings.add(key);
+          unawaited(
+            _convertExportToWav(s.path!).whenComplete(() {
+              _finalizingRecordings.remove(key);
+              notifyListeners();
+            }),
+          );
+        }
+        notifyListeners();
+        return;
+      }
+    }
     final wasActive = realtimeState.active;
     realtimeState = s;
+    _bindCurrentRecording(fileId: s.fileId, path: s.path);
     if (s.path != null && s.bytesReceived > 0) {
       final path = s.path!;
       _registerExportedPaths([path]);
       // Prefer low-latency PCM stream STT; fall back to rolling Ogg batch.
       if (s.active &&
-          autoTranscribe &&
+          _activeAutoTranscribe &&
           !_streamSttPreferred &&
+          _activeConfiguration.provider == SttProvider.soniox &&
           !sonioxTranslationModeActive) {
         unawaited(
           _maybeTranscribeRolling(path, s.bytesReceived, finalPass: false),
@@ -465,20 +868,29 @@ class RecorderController extends ChangeNotifier {
     }
     // When a session finishes with data, keep path listed for playback + final STT.
     if (!s.active && s.path != null && s.bytesReceived > 0) {
-      unawaited(_convertExportToWav(s.path!));
+      final finishedPath = s.path!;
+      final finishedKey = _recordingKey(path: finishedPath);
+      _finalizingRecordings.add(finishedKey);
+      unawaited(
+        _convertExportToWav(finishedPath).whenComplete(() {
+          _finalizingRecordings.remove(finishedKey);
+          notifyListeners();
+        }),
+      );
       statusMessage =
           '实时录音已保存 ${s.path!.split('/').last}（${(s.bytesReceived / 1024).toStringAsFixed(1)} KB）';
       // Attach any live transcript we already have to this file card.
-      final liveText = transcript.trim().isNotEmpty
-          ? transcript.trim()
-          : (transcriptPartial?.trim() ?? '');
-      if (liveText.isNotEmpty) {
-        rememberTranscript(s.path!, liveText);
+      final session = _sessionForReference(
+        RecordingReference(fileId: s.fileId, path: s.path),
+      );
+      if (session != null) {
+        if (session.id == _currentSessionId) _snapshotLiveText();
+        _saveLiveRecording(session, path: s.path);
       }
-      if (autoTranscribe) {
+      if (_activeAutoTranscribe && _recordWireStatus != 2) {
         if (_streamSttPreferred) {
           unawaited(_finishStreamStt(bindPath: s.path));
-        } else {
+        } else if (_activeConfiguration.provider == SttProvider.soniox) {
           unawaited(
             _maybeTranscribeRolling(s.path!, s.bytesReceived, finalPass: true),
           );
@@ -492,10 +904,30 @@ class RecorderController extends ChangeNotifier {
   }
 
   /// Store per-file transcript so Home list can show text (not just a button).
-  void rememberTranscript(String path, String text) {
+  void rememberTranscript(
+    String path,
+    String text, {
+    SttProvider? provider,
+    String? sourceLanguage,
+  }) {
     final t = normalizeSttText(text);
     if (path.isEmpty || t.isEmpty) return;
-    _clearSpeakerAliases(path);
+    final key = _recordingKey(path: path);
+    final previous = _rawTranscriptForPath(path);
+    final metadata = _transcriptMetadata[key];
+    final changed =
+        previous != t ||
+        metadata == null ||
+        (sourceLanguage != null && sourceLanguage != metadata.sourceLanguage);
+    if (changed) {
+      _clearSpeakerAliases(path);
+      _recordingTranslations.remove(key);
+    }
+    _transcriptMetadata[key] = TranscriptMetadata(
+      provider: provider ?? metadata?.provider ?? SttProvider.soniox,
+      sourceLanguage: sourceLanguage ?? metadata?.sourceLanguage,
+      revision: (metadata?.revision ?? 0) + (changed ? 1 : 0),
+    );
     transcriptsByPath[path] = t;
     // Also index by file id when known.
     final id = fileIdFromPath(path);
@@ -523,8 +955,9 @@ class RecorderController extends ChangeNotifier {
     // Only mirror *live* draft onto the newest export while a session is active.
     // Avoids showing a previous take's text on the file list after a new start.
     if (isLiveSession &&
-        exportedPaths.isNotEmpty &&
-        exportedPaths.first == path) {
+        _currentRecording != null &&
+        (fileIdFromPath(path) == _currentRecording!.fileId ||
+            path == _currentRecording!.path)) {
       final live = transcript.trim();
       if (live.isNotEmpty) return live;
       final partial = transcriptPartial?.trim();
@@ -615,7 +1048,11 @@ class RecorderController extends ChangeNotifier {
 
   /// Live BLE Opus frame → PCM16 → provider WS STT (when auto-transcribe on).
   void _onRealtimeOpusFrame(Uint8List frame) {
-    if (!autoTranscribe || !sttConfigured) return;
+    if (!_activeAutoTranscribe ||
+        !_activeSttConfigured ||
+        _recordWireStatus == 2) {
+      return;
+    }
     if (!_preferStreamStt) return;
     if (!_opusPcm.ensureStarted()) {
       _preferStreamStt = false;
@@ -647,18 +1084,27 @@ class RecorderController extends ChangeNotifier {
 
   /// Prefer PCM WS when decode works; false after hard stream failure → Ogg batch.
   bool get _streamSttPreferred =>
-      _preferStreamStt && _opusPcm.isReady && autoTranscribe;
+      _preferStreamStt && _opusPcm.isReady && _activeAutoTranscribe;
 
   Future<bool> _ensureStreamStt() async {
-    if (!autoTranscribe || !sttConfigured || !_preferStreamStt) return false;
+    if (!_activeAutoTranscribe || !_activeSttConfigured || !_preferStreamStt) {
+      return false;
+    }
     if (_sttStream != null && _sttStream!.isServerReady) {
       streamingSttActive = true;
       _flushPendingPcm();
       return true;
     }
     if (_streamSttStarting) return false;
-    final key = _activeSttApiKey;
-    if (key == null) return false;
+    final config = _activeConfiguration;
+    if (config.provider == SttProvider.apple &&
+        config.mode == SttDisplayMode.translation &&
+        !config.appleTranslationReady) {
+      transcriptError = '请在设置中下载翻译语言';
+      _snapshotLiveText();
+      notifyListeners();
+      // Recognition remains useful even if translation resources are missing.
+    }
     if (!_opusPcm.ensureStarted()) {
       _preferStreamStt = false;
       if (sonioxTranslationModeActive) {
@@ -682,7 +1128,12 @@ class RecorderController extends ChangeNotifier {
       await previousSession?.dispose();
       if (revision != _sttLifecycleRevision) return false;
 
-      session = _createStreamSession(key);
+      if (config.provider == SttProvider.apple) {
+        await _fileCancellation;
+        if (revision != _sttLifecycleRevision) return false;
+      }
+
+      session = _createStreamSession(config);
       subscription = session.events.listen((event) {
         if (revision == _sttLifecycleRevision) {
           _onSttStreamEvent(event);
@@ -694,20 +1145,27 @@ class RecorderController extends ChangeNotifier {
       if (revision != _sttLifecycleRevision) return false;
       streamingSttActive = true;
       _preferStreamStt = true;
-      transcriptError = null;
-      statusMessage = '实时转写已连接（Soniox PCM 流）';
+      transcriptError =
+          config.provider == SttProvider.apple &&
+              config.mode == SttDisplayMode.translation &&
+              !config.appleTranslationReady
+          ? '请在设置中下载翻译语言，下次录音生效'
+          : null;
+      statusMessage = '正在转写';
+      _snapshotLiveText();
       _flushPendingPcm();
       notifyListeners();
       return true;
     } catch (e) {
       if (revision != _sttLifecycleRevision) return false;
-      debugPrint('[STT] Soniox stream start failed: $e');
+      debugPrint('[STT] ${config.provider.name} stream start failed: $e');
       streamingSttActive = false;
       _preferStreamStt = false;
       _pendingPcm.clear();
-      transcriptError = sonioxTranslationModeActive
-          ? '$_activeTranslationModeLabel连接失败：$e'
-          : '实时转写连接失败（Soniox），将回退批量转写：$e';
+      transcriptError = config.provider == SttProvider.apple
+          ? _speechErrorMessage(e)
+          : '实时转写失败，可在录音保存后重试';
+      _snapshotLiveText();
       if (identical(_sttStream, session)) _sttStream = null;
       if (identical(_sttStreamSub, subscription)) _sttStreamSub = null;
       await subscription?.cancel();
@@ -722,24 +1180,36 @@ class RecorderController extends ChangeNotifier {
     }
   }
 
-  SttStreamSession _createStreamSession(String key) {
-    final communication = communicationModeActive;
-    final translationConfig = switch (sttMode) {
+  SttStreamSession _createStreamSession(_SpeechConfiguration config) {
+    if (config.provider == SttProvider.apple) {
+      return _appleSpeech.createStreamSession(
+        sourceLanguage: config.sourceLanguage,
+        targetLanguage:
+            config.mode == SttDisplayMode.translation &&
+                config.appleTranslationReady
+            ? config.targetLanguage
+            : null,
+      );
+    }
+    final communication = config.mode == SttDisplayMode.conversation;
+    final translationConfig = switch (config.mode) {
       SttDisplayMode.transcription => const SonioxTranslationConfig.none(),
       SttDisplayMode.translation => SonioxTranslationConfig.oneWay(
-        translationTargetLanguage,
+        config.targetLanguage,
       ),
       SttDisplayMode.conversation => SonioxTranslationConfig.twoWay(
-        ownerLanguage,
-        guestLanguage,
+        config.ownerLanguage,
+        config.guestLanguage,
       ),
     };
     return SonioxSttStreamSession(
-      apiKey: key,
+      apiKey: config.sonioxKey!,
       sampleRate: 16000,
       languageHints: communication
-          ? [ownerLanguage, guestLanguage]
-          : _sonioxLanguageHints,
+          ? [config.ownerLanguage, config.guestLanguage]
+          : (config.sourceLanguage == 'auto'
+                ? const []
+                : [config.sourceLanguage]),
       translation: translationConfig,
     );
   }
@@ -755,20 +1225,22 @@ class RecorderController extends ChangeNotifier {
 
   void _onSttStreamEvent(SttStreamEvent e) {
     final translationSnapshotUpdated =
-        sonioxTranslationModeActive &&
+        (translationModeActive || communicationModeActive) &&
         (e.type == 'partial' || e.type == 'done');
     if (translationSnapshotUpdated) {
       if (translationModeActive) {
         translationTurns = e.translationTurns
-            .where((turn) => turn.targetLanguage == translationTargetLanguage)
+            .where(
+              (turn) => turn.targetLanguage == activeTranslationTargetLanguage,
+            )
             .toList(growable: false);
         pendingTranslationSource = e.pendingTranslationSource;
       } else if (communicationModeActive) {
         ownerTranslationTurns = e.translationTurns
-            .where((turn) => turn.targetLanguage == ownerLanguage)
+            .where((turn) => turn.targetLanguage == activeOwnerLanguage)
             .toList(growable: false);
         guestTranslationTurns = e.translationTurns
-            .where((turn) => turn.targetLanguage == guestLanguage)
+            .where((turn) => turn.targetLanguage == activeGuestLanguage)
             .toList(growable: false);
       }
     }
@@ -777,13 +1249,21 @@ class RecorderController extends ChangeNotifier {
         if (e.text.isEmpty) {
           if (translationSnapshotUpdated) {
             transcribing = true;
+            _snapshotLiveText();
             notifyListeners();
           }
           return;
         }
         final incoming = normalizeSttText(e.text);
         if (incoming.isEmpty) return;
-        if (e.speechFinal) {
+        if (_activeConfiguration.provider == SttProvider.apple) {
+          if (e.speechFinal) {
+            transcript = incoming;
+            transcriptPartial = null;
+          } else {
+            transcriptPartial = incoming;
+          }
+        } else if (e.speechFinal) {
           final prev = transcript.trim();
           // Cumulative drafts (Soniox) already include prior text.
           if (prev.isNotEmpty && incoming.startsWith(prev)) {
@@ -801,6 +1281,7 @@ class RecorderController extends ChangeNotifier {
           }
         }
         transcribing = true;
+        _snapshotLiveText();
         notifyListeners();
       case 'done':
         if (e.text.isNotEmpty) {
@@ -809,20 +1290,27 @@ class RecorderController extends ChangeNotifier {
         }
         transcribing = false;
         streamingSttActive = false;
-        statusMessage = e.durationSec != null
-            ? '实时转写完成（Soniox · ${e.durationSec!.toStringAsFixed(1)}s）'
-            : '实时转写完成（Soniox）';
+        statusMessage = '转写完成';
+        _snapshotLiveText();
         notifyListeners();
       case 'error':
-        transcriptError = sonioxTranslationModeActive
-            ? '$_activeTranslationModeLabel错误：${e.error ?? 'Soniox stream error'}'
-            : (e.error ?? 'STT stream error');
+        transcriptError = _activeConfiguration.provider == SttProvider.apple
+            ? _speechErrorMessage(
+                PlatformException(code: e.error ?? 'processing_failed'),
+              )
+            : '实时转写中断，可在录音保存后重试';
         streamingSttActive = false;
         _preferStreamStt = false;
+        _snapshotLiveText();
+        notifyListeners();
+      case 'translationError':
+        transcriptError = '翻译失败，原文已保留；可在录音保存后重试';
+        _snapshotLiveText();
         notifyListeners();
       case 'closed':
         streamingSttActive = false;
         transcribing = false;
+        _snapshotLiveText();
         notifyListeners();
       default:
         break;
@@ -841,9 +1329,22 @@ class RecorderController extends ChangeNotifier {
     streamingSttActive = true;
   }
 
+  @visibleForTesting
+  void handleRealtimeStateForTesting(RealtimeStreamState state) =>
+      _onRealtimeState(state);
+
   Future<void> _finishStreamStt({String? bindPath}) async {
     final session = _sttStream;
-    if (session == null && _pendingPcm.isEmpty) return;
+    final recordingSession = _currentRecording;
+    if (session == null && _pendingPcm.isEmpty) {
+      if (recordingSession != null) {
+        recordingSession.finalizing = false;
+        _snapshotLiveText();
+        _saveLiveRecording(recordingSession, path: bindPath);
+      }
+      return;
+    }
+    if (recordingSession != null) recordingSession.finalizing = true;
     final revision = _sttLifecycleRevision;
     final subscription = _sttStreamSub;
     _sttStream = null;
@@ -863,25 +1364,38 @@ class RecorderController extends ChangeNotifier {
         }
       }
       if (revision != _sttLifecycleRevision) return;
-      final text = transcript.trim();
-      final path = bindPath ?? realtimeState.path;
-      if (text.isNotEmpty && path != null) {
-        rememberTranscript(path, text);
+      _snapshotLiveText();
+      if (recordingSession != null) {
+        _saveLiveRecording(recordingSession, path: bindPath);
       }
     } catch (e) {
       debugPrint('[STT] stream finish: $e');
+      if (revision == _sttLifecycleRevision && recordingSession != null) {
+        transcriptError = '部分处理未完成，可在录音详情中重试';
+        _snapshotLiveText();
+        _saveLiveRecording(recordingSession, path: bindPath);
+      }
     } finally {
       await subscription?.cancel();
       await session?.dispose();
+      if (recordingSession != null) recordingSession.finalizing = false;
       if (revision == _sttLifecycleRevision) {
         _pendingPcm.clear();
-        transcribing = false;
+        transcribing = _fileJobKey != null;
         notifyListeners();
       }
     }
   }
 
   void _cancelStreamSttAfterPause() {
+    _snapshotLiveText();
+    final recordingSession = _currentRecording;
+    if (recordingSession != null) {
+      recordingSession.active = false;
+      recordingSession.paused = true;
+      recordingSession.finalizing = false;
+      _saveLiveRecording(recordingSession);
+    }
     final session = _sttStream;
     final subscription = _sttStreamSub;
     _sttLifecycleRevision++;
@@ -922,8 +1436,7 @@ class RecorderController extends ChangeNotifier {
     autoTranscribe = v;
     if (!v) {
       sttMode = SttDisplayMode.transcription;
-      _resetTranslationTurns();
-      unawaited(_finishStreamStt());
+      if (!_liveProcessing) _resetTranslationTurns();
     }
     notifyListeners();
     unawaited(_persistSettings());
@@ -948,16 +1461,22 @@ class RecorderController extends ChangeNotifier {
   bool get isLiveSession =>
       connected && (recording || realtimeState.active || streamingSttActive);
 
-  bool get sonioxTranslationModeAvailable => autoTranscribe;
+  bool get sonioxTranslationModeAvailable =>
+      autoTranscribe &&
+      (speechProvider == SttProvider.soniox || appleTranslationAvailable);
 
   bool get translationModeActive =>
-      sttMode == SttDisplayMode.translation && sonioxTranslationModeAvailable;
+      _activeConfiguration.enabled &&
+      _activeConfiguration.mode == SttDisplayMode.translation;
 
   bool get communicationModeActive =>
-      sttMode == SttDisplayMode.conversation && sonioxTranslationModeAvailable;
+      _activeConfiguration.enabled &&
+      _activeConfiguration.provider == SttProvider.soniox &&
+      _activeConfiguration.mode == SttDisplayMode.conversation;
 
   bool get sonioxTranslationModeActive =>
-      translationModeActive || communicationModeActive;
+      _activeConfiguration.provider == SttProvider.soniox &&
+      (translationModeActive || communicationModeActive);
 
   String get _activeTranslationModeLabel =>
       translationModeActive ? '翻译模式' : '交流模式';
@@ -982,11 +1501,10 @@ class RecorderController extends ChangeNotifier {
   /// Saved / override keys for Settings text fields (not env-only secrets).
   String? get sonioxApiKeyStored => _sonioxStt.apiKeyOverride;
 
-  bool get sttConfigured => _sonioxStt.isConfigured;
+  bool get sttConfigured =>
+      _settingsReady && _isConfigured(_settingsConfiguration);
 
   bool get sonioxConfigured => _sonioxStt.isConfigured;
-
-  String? get _activeSttApiKey => _sonioxStt.apiKey;
 
   void clearTranscript() {
     transcript = '';
@@ -998,25 +1516,31 @@ class RecorderController extends ChangeNotifier {
 
   void setSttMode(SttDisplayMode mode) {
     if (mode != SttDisplayMode.transcription &&
-        !sonioxTranslationModeAvailable) {
+        (!autoTranscribe ||
+            (mode == SttDisplayMode.conversation &&
+                !conversationModeAvailable) ||
+            (mode == SttDisplayMode.translation &&
+                !sonioxTranslationModeAvailable))) {
       return;
     }
     if (sttMode == mode) return;
-    unawaited(_finishStreamStt());
     sttMode = mode;
-    _preferStreamStt = true;
-    transcriptError = null;
-    _resetTranslationTurns();
+    if (!_liveProcessing) {
+      _preferStreamStt = true;
+      transcriptError = null;
+      _resetTranslationTurns();
+    }
     notifyListeners();
     unawaited(_persistSettings());
   }
 
   void setTranslationTargetLanguage(String code) {
     final normalized = code.trim().toLowerCase();
-    if (!isSonioxLanguage(normalized)) return;
+    if (normalized.isEmpty) return;
     if (translationTargetLanguage == normalized) return;
     translationTargetLanguage = normalized;
-    _resetTranslationTurns();
+    if (!_liveProcessing) _resetTranslationTurns();
+    unawaited(refreshAppleCapabilities());
     notifyListeners();
     unawaited(_persistSettings());
   }
@@ -1026,7 +1550,7 @@ class RecorderController extends ChangeNotifier {
     if (!isSonioxLanguage(normalized) || normalized == guestLanguage) return;
     if (ownerLanguage == normalized) return;
     ownerLanguage = normalized;
-    _resetTranslationTurns();
+    if (!_liveProcessing) _resetTranslationTurns();
     notifyListeners();
     unawaited(_persistSettings());
   }
@@ -1036,7 +1560,7 @@ class RecorderController extends ChangeNotifier {
     if (!isSonioxLanguage(normalized) || normalized == ownerLanguage) return;
     if (guestLanguage == normalized) return;
     guestLanguage = normalized;
-    _resetTranslationTurns();
+    if (!_liveProcessing) _resetTranslationTurns();
     notifyListeners();
     unawaited(_persistSettings());
   }
@@ -1045,7 +1569,7 @@ class RecorderController extends ChangeNotifier {
     final previousOwner = ownerLanguage;
     ownerLanguage = guestLanguage;
     guestLanguage = previousOwner;
-    _resetTranslationTurns();
+    if (!_liveProcessing) _resetTranslationTurns();
     notifyListeners();
     unawaited(_persistSettings());
   }
@@ -1059,10 +1583,46 @@ class RecorderController extends ChangeNotifier {
 
   /// Fresh recording session: clear live draft and STT stream (keep per-file history).
   Future<void> _beginNewLiveTranscriptSession() async {
+    final previous = _currentRecording;
+    if (previous != null) {
+      _snapshotLiveText();
+      previous.active = false;
+      previous.finalizing = false;
+      _saveLiveRecording(previous);
+    }
+    final config = _settingsConfiguration;
+    _currentSessionId =
+        '${DateTime.now().microsecondsSinceEpoch}-${++liveSessionRevision}';
+    _recordingSessions[_currentSessionId!] = _RecordingSession(
+      _currentSessionId!,
+      config,
+    );
+    _liveConfiguration = config;
+    if (appleLanguagePreparationBusy) {
+      _fileCancellation = _appleSpeech.cancelFileProcessing();
+    }
+    if (_fileJobKey != null && _fileJobProvider == SttProvider.apple) {
+      _fileJobRevision++;
+      if (_fileJobKey != null) {
+        _recordingErrors[_fileJobKey!] = '处理因录音暂停，可在录音结束后重试';
+      }
+      _fileCancellation = _appleSpeech.cancelFileProcessing();
+      _fileJobKey = null;
+      _fileJobProvider = null;
+      transcribingPath = null;
+      fileTranscriptionProgress = null;
+    }
     _sttLifecycleRevision++;
     transcript = '';
     transcriptPartial = null;
     transcriptError = null;
+    transcribing = _fileJobKey != null;
+    if (config.enabled && !_isConfigured(config)) {
+      transcriptError = config.provider == SttProvider.apple
+          ? '请在设置中选择并下载录音语言，下次录音生效'
+          : '请在设置中配置 Soniox，下次录音生效';
+      _currentRecording?.error = transcriptError;
+    }
     _resetTranslationTurns();
     _lastSttBytes = 0;
     _lastSttAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -1089,78 +1649,266 @@ class RecorderController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Transcribe a finished local export (manual).
-  Future<void> transcribeLocalFile(String path) async {
-    if (!sttConfigured) {
-      transcriptError = '未配置 SONIOX_API_KEY（export SONIOX_API_KEY=…）';
+  Future<SpeechResourceStatus> recordingSpeechStatus(
+    String sourceLanguage,
+  ) async {
+    final capabilities = await _appleSpeech.capabilities(
+      sourceLanguage: sourceLanguage,
+    );
+    return capabilities.speechStatus;
+  }
+
+  Future<void> transcribeRecording(
+    RecordingReference ref, {
+    String? sourceLanguage,
+    bool prepareLanguages = false,
+  }) async {
+    final view = recordingView(ref);
+    if (view.path == null) {
+      _recordingErrors[_referenceKey(ref)] = '请先下载录音';
       notifyListeners();
       return;
     }
-    transcribing = true;
+    await transcribeLocalFile(
+      view.path!,
+      sourceLanguage:
+          sourceLanguage ??
+          (speechProvider == SttProvider.apple && view.sourceLanguage != 'auto'
+              ? view.sourceLanguage
+              : null),
+      prepareLanguages: prepareLanguages,
+    );
+  }
+
+  /// File jobs never write the current live transcript.
+  Future<void> transcribeLocalFile(
+    String path, {
+    String? sourceLanguage,
+    bool prepareLanguages = false,
+  }) async {
+    await _settingsLoaded;
+    if (_disposed) return;
+    final settings = _settingsConfiguration;
+    final config =
+        settings.provider == SttProvider.apple && sourceLanguage != null
+        ? settings.withSourceLanguage(sourceLanguage.trim())
+        : settings;
+    final key = _recordingKey(path: path);
+    if (fileProcessingBusy ||
+        _isRecordingAudioLocked(fileIdFromPath(path), path)) {
+      _recordingErrors[key] = '请在当前录音或处理结束后重试';
+      notifyListeners();
+      return;
+    }
+    if (config.provider == SttProvider.apple
+        ? config.sourceLanguage.isEmpty
+        : !_isConfigured(config)) {
+      _recordingErrors[key] = config.provider == SttProvider.apple
+          ? '请选择录音语言'
+          : '请在设置中配置 Soniox';
+      notifyListeners();
+      return;
+    }
+    final revision = ++_fileJobRevision;
+    _fileJobKey = key;
+    _fileJobProvider = config.provider;
     transcribingPath = path;
+    transcribing = true;
     fileTranscriptionProgress = const SttFileProgress(SttFileStage.preparing);
-    transcriptError = null;
+    _recordingErrors.remove(key);
     notifyListeners();
-    var lastProgressNotify = DateTime.fromMillisecondsSinceEpoch(0);
-    double? lastUploadFraction;
-    SttFileStage? lastStage;
     try {
-      final r = await _transcribePath(
-        path,
-        onProgress: (progress) {
-          if (transcribingPath != path) return;
-          fileTranscriptionProgress = progress;
-          final now = DateTime.now();
-          final fraction = progress.fraction;
-          final stageChanged = progress.stage != lastStage;
-          final fractionChanged =
-              fraction != null &&
-              (lastUploadFraction == null ||
-                  (fraction - lastUploadFraction!).abs() >= 0.01);
-          if (stageChanged ||
-              fractionChanged ||
-              now.difference(lastProgressNotify) >=
-                  const Duration(milliseconds: 120)) {
-            lastStage = progress.stage;
-            lastUploadFraction = fraction;
-            lastProgressNotify = now;
-            notifyListeners();
+      if (config.provider == SttProvider.apple) {
+        final capabilities = await _appleSpeech.capabilities(
+          sourceLanguage: config.sourceLanguage,
+        );
+        if (_disposed || revision != _fileJobRevision) return;
+        if (!capabilities.supported) {
+          throw PlatformException(code: 'unsupported');
+        }
+        if (capabilities.speechStatus == SpeechResourceStatus.unsupported) {
+          throw PlatformException(code: 'language_unsupported');
+        }
+        if (capabilities.speechStatus == SpeechResourceStatus.needsDownload) {
+          if (!prepareLanguages) {
+            throw PlatformException(code: 'resources_missing');
           }
+          await _appleSpeech.prepareLanguages(
+            sourceLanguage: config.sourceLanguage,
+          );
+          if (_disposed || revision != _fileJobRevision) return;
+        }
+      }
+      final result = await _transcribePath(
+        path,
+        configuration: config,
+        isCurrent: () => !_disposed && revision == _fileJobRevision,
+        onProgress: (progress) {
+          if (_disposed || revision != _fileJobRevision) return;
+          fileTranscriptionProgress = progress;
+          notifyListeners();
         },
       );
-      transcript = r.text;
-      transcriptPartial = null;
-      if (r.text.trim().isNotEmpty) {
-        rememberTranscript(path, r.text);
+      if (_disposed || revision != _fileJobRevision) return;
+      if (result.text.trim().isEmpty) {
+        _recordingErrors[key] = '未识别到语音，可重试';
+      } else {
+        final currentPath =
+            recordingView(RecordingReference(path: path)).path ?? path;
+        rememberTranscript(
+          currentPath,
+          result.text,
+          provider: config.provider,
+          sourceLanguage: config.provider == SttProvider.apple
+              ? config.sourceLanguage
+              : result.language ?? config.sourceLanguage,
+        );
+        statusMessage = '转写已保存';
+        // Refresh a closed live route without retaining an obsolete error.
+        final session = _sessionForReference(
+          RecordingReference(path: currentPath),
+        );
+        if (session != null && !session.active) session.error = null;
       }
-      statusMessage =
-          '转写完成（Soniox · ${r.durationSec?.toStringAsFixed(1) ?? "?"}s）';
-    } catch (e) {
-      transcriptError = '$e';
+    } catch (error) {
+      if (!_disposed && revision == _fileJobRevision) {
+        _recordingErrors[key] =
+            error is PlatformException && error.code == 'resources_missing'
+            ? '请下载所选录音语言后重试'
+            : _speechErrorMessage(error);
+      }
     } finally {
-      transcribing = false;
-      transcribingPath = null;
-      fileTranscriptionProgress = null;
+      if (!_disposed && revision == _fileJobRevision) {
+        _fileJobKey = null;
+        _fileJobProvider = null;
+        transcribingPath = null;
+        fileTranscriptionProgress = null;
+        transcribing = streamingSttActive;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> prepareRecordingTranslation(
+    RecordingReference ref, {
+    required String sourceLanguage,
+    required String targetLanguage,
+  }) => translateRecording(
+    ref,
+    sourceLanguage: sourceLanguage,
+    targetLanguage: targetLanguage,
+    prepareLanguages: true,
+  );
+
+  Future<void> translateRecording(
+    RecordingReference ref, {
+    String? sourceLanguage,
+    String? targetLanguage,
+    bool prepareLanguages = false,
+  }) async {
+    final view = recordingView(ref);
+    final key = _referenceKey(ref);
+    if (fileProcessingBusy || view.audioLocked) {
+      _recordingErrors[key] = '请在当前录音或处理结束后重试';
       notifyListeners();
+      return;
+    }
+    if (view.text.trim().isEmpty) return;
+    final source =
+        sourceLanguage ??
+        (view.sourceLanguage == null || view.sourceLanguage == 'auto'
+            ? appleSourceLanguage
+            : view.sourceLanguage!);
+    final target = targetLanguage ?? translationTargetLanguage;
+    if (source.isEmpty) {
+      _recordingErrors[key] = '请在设置中选择录音语言';
+      notifyListeners();
+      return;
+    }
+    final revision = ++_fileJobRevision;
+    final sourceRevision = _transcriptMetadata[key]?.revision ?? 0;
+    _fileJobKey = key;
+    _fileJobProvider = SttProvider.apple;
+    _recordingErrors.remove(key);
+    fileTranscriptionProgress = const SttFileProgress(SttFileStage.processing);
+    notifyListeners();
+    try {
+      if (prepareLanguages) {
+        await _appleSpeech.prepareTranslation(
+          sourceLanguage: source,
+          targetLanguage: target,
+        );
+        if (_disposed || revision != _fileJobRevision) return;
+      }
+      final translated = await _appleSpeech.translate(
+        view.text,
+        sourceLanguage: source,
+        targetLanguage: target,
+      );
+      if (_disposed ||
+          revision != _fileJobRevision ||
+          sourceRevision != (_transcriptMetadata[key]?.revision ?? 0) ||
+          recordingView(ref).text != view.text) {
+        return;
+      }
+      if (translated.trim().isEmpty) throw StateError('empty_translation');
+      _transcriptMetadata.putIfAbsent(
+        key,
+        () => TranscriptMetadata(
+          provider: view.provider,
+          sourceLanguage: source,
+          revision: sourceRevision,
+        ),
+      );
+      _recordingTranslations[key] = RecordingTranslation(
+        text: translated,
+        sourceLanguage: source,
+        targetLanguage: target,
+        provider: SttProvider.apple,
+        sourceRevision: sourceRevision,
+      );
+      _sessionForReference(ref)?.error = null;
+      await _persistTranscripts();
+    } catch (error) {
+      if (!_disposed && revision == _fileJobRevision) {
+        _recordingErrors[key] = _speechErrorMessage(error);
+      }
+    } finally {
+      if (!_disposed && revision == _fileJobRevision) {
+        _fileJobKey = null;
+        _fileJobProvider = null;
+        fileTranscriptionProgress = null;
+        notifyListeners();
+      }
     }
   }
 
   Future<SttResult> _transcribePath(
     String path, {
+    _SpeechConfiguration? configuration,
     SttFileProgressCallback? onProgress,
-  }) {
-    final language = transcriptLanguage.toLowerCase();
+    bool Function()? isCurrent,
+  }) async {
+    final config = configuration ?? _activeConfiguration;
+    if (config.provider == SttProvider.apple) {
+      final wavPath = await _convertExportToWav(path);
+      if (isCurrent != null && !isCurrent()) {
+        throw PlatformException(code: 'cancelled');
+      }
+      if (!wavPath.endsWith('.wav')) {
+        throw PlatformException(code: 'audio_invalid');
+      }
+      return _appleSpeech.transcribePath(
+        wavPath,
+        sourceLanguage: config.sourceLanguage,
+        onProgress: onProgress,
+      );
+    }
     return _sonioxStt.transcribePath(
       path,
-      language: language == 'auto' ? null : language,
+      language: config.sourceLanguage == 'auto' ? null : config.sourceLanguage,
       onProgress: onProgress,
     );
-  }
-
-  List<String> get _sonioxLanguageHints {
-    final c = transcriptLanguage.toLowerCase();
-    if (c.isEmpty || c == 'auto') return const [];
-    return [c];
   }
 
   Future<void> _maybeTranscribeRolling(
@@ -1168,7 +1916,11 @@ class RecorderController extends ChangeNotifier {
     int bytes, {
     required bool finalPass,
   }) async {
-    if (!sttConfigured || !autoTranscribe) return;
+    if (_activeConfiguration.provider != SttProvider.soniox ||
+        !_activeSttConfigured ||
+        !_activeAutoTranscribe) {
+      return;
+    }
     if (_recordWireStatus == 2) return;
     if (transcribing && !finalPass) return;
     final revision = _sttLifecycleRevision;
@@ -1192,16 +1944,27 @@ class RecorderController extends ChangeNotifier {
         if (finalPass) {
           transcript = r.text;
           transcriptPartial = null;
-          rememberTranscript(path, r.text);
+          rememberTranscript(
+            path,
+            r.text,
+            provider: SttProvider.soniox,
+            sourceLanguage: _activeConfiguration.sourceLanguage,
+          );
         } else {
           // Keep growing draft; prefer longer / newer full-file STT.
           transcriptPartial = r.text;
           if (r.text.length >= transcript.length) {
             transcript = r.text;
           }
-          rememberTranscript(path, r.text);
+          rememberTranscript(
+            path,
+            r.text,
+            provider: SttProvider.soniox,
+            sourceLanguage: _activeConfiguration.sourceLanguage,
+          );
         }
       }
+      _snapshotLiveText();
     } catch (e) {
       if (revision != _sttLifecycleRevision || _recordWireStatus == 2) return;
       // Soft-fail during rolling; surface message.
@@ -1273,6 +2036,8 @@ class RecorderController extends ChangeNotifier {
   final BleService _ble;
   final PersistedDeviceLoader _persistedDeviceLoader;
   final Duration recordingShortcutScanTimeout;
+  late final Future<void> _settingsLoaded;
+  bool _settingsReady = false;
   late final Future<void> _persistedDeviceLoaded;
   final DeviceCrypto _crypto = DeviceCrypto();
   late final WifiExportService _wifi;
@@ -1313,7 +2078,29 @@ class RecorderController extends ChangeNotifier {
 
   /// Decoded Opus frames in the current session (diagnostics).
   int pcmFramesDecoded = 0;
-  final SonioxSttService _sonioxStt = SonioxSttService();
+  final SonioxSttService _sonioxStt;
+  final AppleSpeechService _appleSpeech;
+  SttProvider speechProvider = SttProvider.soniox;
+  String appleSourceLanguage = '';
+  AppleSpeechCapabilities appleCapabilities =
+      const AppleSpeechCapabilities.unsupported();
+  bool appleCapabilitiesLoading = false;
+  bool appleLanguagePreparationBusy = false;
+  String? appleSetupError;
+  int _capabilityRevision = 0;
+  bool _disposed = false;
+  int liveSessionRevision = 0;
+  String? _currentSessionId;
+  final Map<String, _RecordingSession> _recordingSessions = {};
+  _SpeechConfiguration? _liveConfiguration;
+  final Map<String, TranscriptMetadata> _transcriptMetadata = {};
+  final Map<String, RecordingTranslation> _recordingTranslations = {};
+  final Map<String, String> _recordingErrors = {};
+  final Set<String> _finalizingRecordings = {};
+  int _fileJobRevision = 0;
+  String? _fileJobKey;
+  SttProvider? _fileJobProvider;
+  Future<void> _fileCancellation = Future<void>.value();
   final OpusPcmDecoder _opusPcm = OpusPcmDecoder(outputSampleRate: 16000);
   SttStreamSession? _sttStream;
   StreamSubscription? _sttStreamSub;
@@ -1465,6 +2252,7 @@ class RecorderController extends ChangeNotifier {
   }
 
   void toggleFileSelected(int fileId) {
+    if (_isRecordingAudioLocked(fileId, localPathFor(fileId))) return;
     if (selectedFileIds.contains(fileId)) {
       selectedFileIds.remove(fileId);
     } else {
@@ -1476,7 +2264,13 @@ class RecorderController extends ChangeNotifier {
   void selectAllFiles() {
     selectedFileIds
       ..clear()
-      ..addAll(files.map((f) => f.fileId));
+      ..addAll(
+        files
+            .where(
+              (f) => !_isRecordingAudioLocked(f.fileId, localPathFor(f.fileId)),
+            )
+            .map((f) => f.fileId),
+      );
     selecting = true;
     notifyListeners();
   }
@@ -1488,6 +2282,7 @@ class RecorderController extends ChangeNotifier {
 
   /// Select a single file and enter selection mode (for one-tap export).
   void selectOnly(int fileId) {
+    if (_isRecordingAudioLocked(fileId, localPathFor(fileId))) return;
     selecting = true;
     selectedFileIds
       ..clear()
@@ -1712,6 +2507,8 @@ class RecorderController extends ChangeNotifier {
     selectedFileIds.clear();
     selecting = false;
     recording = false;
+    _snapshotLiveText();
+    _currentRecording?.active = false;
     _recordWireStatus = 0;
     encryptReady = false;
     _crypto.resetSession();
@@ -1845,6 +2642,8 @@ class RecorderController extends ChangeNotifier {
   }
 
   Future<bool> _startRecordChecked() async {
+    await _settingsLoaded;
+    if (_disposed) return false;
     await _yieldBacklogToCurrentRecording();
     final sent = await _sendChecked(
       DeviceCommands.startRecord(),
@@ -1877,6 +2676,21 @@ class RecorderController extends ChangeNotifier {
     int? durationSec,
     String source = '',
   }) {
+    if (!_settingsReady) {
+      unawaited(
+        _settingsLoaded.then((_) {
+          if (!_disposed) {
+            _applyRecordStatus(
+              status,
+              fileId: fileId,
+              durationSec: durationSec,
+              source: source,
+            );
+          }
+        }),
+      );
+      return;
+    }
     final wasRecording = recording;
     final prevWire = _recordWireStatus;
     final active = status == 1;
@@ -1898,6 +2712,9 @@ class RecorderController extends ChangeNotifier {
       if (prevWire == 0 || source == 'app_start') {
         unawaited(_beginNewLiveTranscriptSession());
       }
+      _bindCurrentRecording(fileId: fileId);
+      _currentRecording?.active = true;
+      _currentRecording?.paused = false;
       // New take: re-enable PCM stream STT (may have fallen back last session).
       _preferStreamStt = true;
       pcmFramesDecoded = 0;
@@ -1917,6 +2734,11 @@ class RecorderController extends ChangeNotifier {
         }
       }
     } else {
+      _snapshotLiveText();
+      _currentRecording?.active = false;
+      _currentRecording?.paused = status == 2;
+      _currentRecording?.finalizing =
+          status == 0 && (realtimeState.active || _sttStream != null);
       final label = status == 2 ? '已暂停' : '已停止录音';
       if (durationSec != null && durationSec > 0) {
         statusMessage = '$label（${durationSec}s）';
@@ -2016,6 +2838,7 @@ class RecorderController extends ChangeNotifier {
   }
 
   Future<void> _startCurrentRecordingTransfer(int fileId) async {
+    _bindCurrentRecording(fileId: fileId);
     await _yieldBacklogToCurrentRecording();
     if (!connected || !_ble.isConnected) return;
     if (!recording && info?.recording != true) return;
@@ -2035,6 +2858,65 @@ class RecorderController extends ChangeNotifier {
   var _loadingFileListPages = false;
   final List<OfflineFileEntry> _fileListPages = [];
   Timer? _fileListPageTimeout;
+  Completer<void>? _fileRefreshDone;
+  Timer? _fileRefreshTimeout;
+
+  Future<void> refreshLocalFiles() async {
+    if (_liveProcessing ||
+        isExporting ||
+        needsWifiJoin ||
+        _catalogConversionRunning) {
+      return;
+    }
+    await _loadLocalExports();
+  }
+
+  /// Pull-to-refresh remains active until the device inventory has arrived.
+  Future<void> refreshDeviceFiles() {
+    final pending = _fileRefreshDone;
+    if (pending != null) return pending.future;
+    if (!connected ||
+        isExporting ||
+        needsWifiJoin ||
+        downloadingFileId != null ||
+        phase == AppPhase.busy ||
+        phase == AppPhase.connecting) {
+      return Future<void>.value();
+    }
+    final done = _fileRefreshDone = Completer<void>();
+    _fileRefreshTimeout = Timer(const Duration(seconds: 20), () {
+      _loadingFileListPages = false;
+      _fileListPageTimeout?.cancel();
+      errorMessage = '刷新超时，请下拉重试';
+      _completeFileRefresh();
+      notifyListeners();
+    });
+    unawaited(() async {
+      try {
+        if (!_loadingFileListPages) await listFiles();
+        if (!identical(_fileRefreshDone, done)) return;
+        if (!connected || errorMessage != null) {
+          _loadingFileListPages = false;
+          _completeFileRefresh();
+        }
+      } catch (_) {
+        if (!identical(_fileRefreshDone, done)) return;
+        errorMessage = '刷新失败，请下拉重试';
+        _loadingFileListPages = false;
+        _completeFileRefresh();
+        notifyListeners();
+      }
+    }());
+    return done.future;
+  }
+
+  void _completeFileRefresh() {
+    _fileRefreshTimeout?.cancel();
+    _fileRefreshTimeout = null;
+    final done = _fileRefreshDone;
+    _fileRefreshDone = null;
+    if (done != null && !done.isCompleted) done.complete();
+  }
 
   Future<void> listFiles() {
     _fileListPageTimeout?.cancel();
@@ -2090,11 +2972,13 @@ class RecorderController extends ChangeNotifier {
               _loadingFileListPages = false;
               statusMessage =
                   '${files.length} 条录音（第 ${requestedPage + 1} 页无响应）';
+              _completeFileRefresh();
               notifyListeners();
             });
           } catch (error) {
             _loadingFileListPages = false;
             errorMessage = '获取录音列表第 ${_fileListPage + 1} 页失败：$error';
+            _completeFileRefresh();
             notifyListeners();
           }
         }),
@@ -2104,6 +2988,7 @@ class RecorderController extends ChangeNotifier {
 
     _loadingFileListPages = false;
     statusMessage = '${files.length} 条录音';
+    _completeFileRefresh();
     _kickRealtimeFromFileList(list);
     _scheduleAutoTransferMissing();
   }
@@ -2213,6 +3098,12 @@ class RecorderController extends ChangeNotifier {
   /// On-demand single-file download over BLE — no Wi‑Fi SoftAP setup needed.
   /// Wi‑Fi export is only worth the join dance for multiple files at once.
   Future<void> downloadFileOverBle(OfflineFileEntry file) async {
+    if (_liveProcessing ||
+        _isRecordingAudioLocked(file.fileId, localPathFor(file.fileId))) {
+      errorMessage = '录音保存后再下载';
+      notifyListeners();
+      return;
+    }
     if (!connected || !_ble.isConnected) {
       errorMessage = '请先通过 BLE 连接';
       notifyListeners();
@@ -2362,6 +3253,7 @@ class RecorderController extends ChangeNotifier {
       final source = File(path);
       final name = p.basename(path);
       try {
+        _requireFinishedRecording(path);
         if (!await source.exists()) throw StateError('录音文件不存在');
         final audioTarget = p.join(destination.path, name);
         if (!p.equals(p.absolute(path), p.absolute(audioTarget))) {
@@ -2405,6 +3297,7 @@ class RecorderController extends ChangeNotifier {
     await sidecarDir.create(recursive: true);
 
     for (final path in paths.toSet()) {
+      _requireFinishedRecording(path);
       final audio = File(path);
       if (!await audio.exists()) continue;
       result.add(path);
@@ -2424,6 +3317,7 @@ class RecorderController extends ChangeNotifier {
     Iterable<String> paths,
   ) async {
     final selected = paths.toSet();
+    final removed = <String>{};
     var deleted = 0;
     final failed = <String>[];
 
@@ -2439,6 +3333,10 @@ class RecorderController extends ChangeNotifier {
               p.join(p.dirname(path), '$id.opus.bin'),
             };
       try {
+        _requireFinishedRecording(path);
+        if (_fileJobKey == _recordingKey(path: path)) {
+          throw StateError('处理完成后再删除');
+        }
         if (playingPath == path || (id != null && playingFileId == id)) {
           await stopPlayback();
         }
@@ -2453,6 +3351,15 @@ class RecorderController extends ChangeNotifier {
           transcriptsByFileId.remove(id);
           speakerAliasesByFileId.remove(id);
         }
+        final key = _recordingKey(path: path);
+        _transcriptMetadata.remove(key);
+        _recordingTranslations.remove(key);
+        _recordingErrors.remove(key);
+        _recordingSessions.removeWhere(
+          (_, session) =>
+              id != null && session.fileId == id || session.path == path,
+        );
+        removed.add(path);
         deleted++;
       } catch (error) {
         failed.add('${p.basename(path)}: $error');
@@ -2461,9 +3368,9 @@ class RecorderController extends ChangeNotifier {
 
     exportedPaths.removeWhere((path) {
       final id = ExportCatalog.fileIdFromPath(path);
-      return selected.contains(path) ||
+      return removed.contains(path) ||
           (id != null &&
-              selected.any((item) => ExportCatalog.fileIdFromPath(item) == id));
+              removed.any((item) => ExportCatalog.fileIdFromPath(item) == id));
     });
     _registerExportedPaths(exportedPaths);
     if (expandedLocalPath != null && selected.contains(expandedLocalPath)) {
@@ -2479,6 +3386,8 @@ class RecorderController extends ChangeNotifier {
   }
 
   Future<String> renameLocalExport(String path, String label) async {
+    _requireFinishedRecording(path);
+    if (_fileJobKey == _recordingKey(path: path)) throw StateError('处理完成后再重命名');
     final source = File(path);
     if (!await source.exists()) throw StateError('文件不存在');
 
@@ -2499,6 +3408,9 @@ class RecorderController extends ChangeNotifier {
     if (transcript != null) transcriptsByPath[targetPath] = transcript;
     final aliases = speakerAliasesByPath.remove(path);
     if (aliases != null) speakerAliasesByPath[targetPath] = aliases;
+    for (final session in _recordingSessions.values) {
+      if (session.path == path) session.path = targetPath;
+    }
     final cachedDuration = _localDurations.remove(path);
     if (cachedDuration != null) _localDurations[targetPath] = cachedDuration;
     final renamedPaths = exportedPaths
@@ -2586,12 +3498,21 @@ class RecorderController extends ChangeNotifier {
     }
   }
 
-  Future<void> deleteFile(int fileId) =>
-      _send(DeviceCommands.deleteFile(fileId), label: '正在删除文件…');
+  Future<void> deleteFile(int fileId) async {
+    if (_isRecordingAudioLocked(fileId, localPathFor(fileId))) {
+      errorMessage = '录音保存后再删除';
+      notifyListeners();
+      return;
+    }
+    await _send(DeviceCommands.deleteFile(fileId), label: '正在删除文件…');
+  }
 
   Future<int> deleteSelectedDeviceFiles() async {
     if (!_ble.isConnected || selectedFileIds.isEmpty) return 0;
-    final ids = selectedFileIds.toList();
+    final ids = selectedFileIds
+        .where((id) => !_isRecordingAudioLocked(id, localPathFor(id)))
+        .toList();
+    if (ids.isEmpty) return 0;
     phase = AppPhase.busy;
     errorMessage = null;
     var deleted = 0;
@@ -2662,15 +3583,26 @@ class RecorderController extends ChangeNotifier {
 
   /// Open device SoftAP and wait for IP:port. UI should then prompt join.
   Future<WifiEndpoint?> beginWifiExport() async {
+    if (_liveProcessing) {
+      errorMessage = '录音保存后再导出';
+      notifyListeners();
+      return null;
+    }
     _wifiExportRun++;
     if (!_ble.isConnected) {
       errorMessage = '请先通过 BLE 连接';
       notifyListeners();
       return null;
     }
-    final targets = selectedFileIds.isNotEmpty
-        ? selectedUnexportedFiles
-        : unexportedFiles;
+    final targets =
+        (selectedFileIds.isNotEmpty ? selectedUnexportedFiles : unexportedFiles)
+            .where(
+              (file) => !_isRecordingAudioLocked(
+                file.fileId,
+                localPathFor(file.fileId),
+              ),
+            )
+            .toList();
     if (targets.isEmpty) {
       errorMessage = selectedFileIds.isNotEmpty ? '所选录音均已导出' : '所有录音均已导出';
       notifyListeners();
@@ -2823,6 +3755,11 @@ class RecorderController extends ChangeNotifier {
   /// Completed exports are standard WAV. Legacy raw Opus files are still muxed
   /// to Ogg on demand for playback compatibility.
   Future<void> playExported(String path, {int? fileId}) async {
+    if (_isRecordingAudioLocked(fileId ?? fileIdFromPath(path), path)) {
+      errorMessage = '录音保存后即可播放';
+      notifyListeners();
+      return;
+    }
     try {
       final file = File(path);
       if (!await file.exists()) {
@@ -3206,7 +4143,17 @@ class RecorderController extends ChangeNotifier {
   }
 
   @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
+  @override
   void dispose() {
+    _disposed = true;
+    _completeFileRefresh();
+    _fileJobRevision++;
+    _capabilityRevision++;
+    _sttLifecycleRevision++;
     _postBindFileRefreshTimer?.cancel();
     _fileListPageTimeout?.cancel();
     _recordingShortcutTimer?.cancel();
@@ -3222,8 +4169,62 @@ class RecorderController extends ChangeNotifier {
     unawaited(_player.dispose());
     unawaited(_realtime.dispose());
     _sonioxStt.dispose();
+    unawaited(_appleSpeech.dispose());
     _wifi.dispose();
     _ble.dispose();
     super.dispose();
   }
+}
+
+class _SpeechConfiguration {
+  const _SpeechConfiguration({
+    required this.provider,
+    required this.sourceLanguage,
+    required this.targetLanguage,
+    required this.ownerLanguage,
+    required this.guestLanguage,
+    required this.mode,
+    required this.enabled,
+    required this.appleReady,
+    required this.appleTranslationReady,
+    this.sonioxKey,
+  });
+  final SttProvider provider;
+  final String sourceLanguage;
+  final String targetLanguage;
+  final String ownerLanguage;
+  final String guestLanguage;
+  final SttDisplayMode mode;
+  final bool enabled;
+  final bool appleReady;
+  final bool appleTranslationReady;
+  final String? sonioxKey;
+
+  _SpeechConfiguration withSourceLanguage(String source) =>
+      _SpeechConfiguration(
+        provider: provider,
+        sourceLanguage: source,
+        targetLanguage: targetLanguage,
+        ownerLanguage: ownerLanguage,
+        guestLanguage: guestLanguage,
+        mode: mode,
+        enabled: enabled,
+        appleReady: appleReady,
+        appleTranslationReady: appleTranslationReady,
+        sonioxKey: sonioxKey,
+      );
+}
+
+class _RecordingSession {
+  _RecordingSession(this.id, this.configuration);
+  final String id;
+  final _SpeechConfiguration configuration;
+  int? fileId;
+  String? path;
+  String text = '';
+  RecordingTranslation? translation;
+  String? error;
+  bool active = true;
+  bool paused = false;
+  bool finalizing = false;
 }

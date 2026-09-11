@@ -7,15 +7,49 @@ import '../../state/recorder_controller.dart';
 import '../../theme/app_theme.dart';
 
 /// Immersive, face-to-face live translation surface.
-class CommunicationScreen extends StatelessWidget {
-  const CommunicationScreen({super.key});
+class CommunicationScreen extends StatefulWidget {
+  const CommunicationScreen({super.key, this.reference});
+  final RecordingReference? reference;
+  @override
+  State<CommunicationScreen> createState() => _CommunicationScreenState();
+}
+
+class _CommunicationScreenState extends State<CommunicationScreen> {
+  String _owner = 'en';
+  String _guest = 'zh';
+  List<SttTranslationTurn> _ownerTurns = const [];
+  List<SttTranslationTurn> _guestTurns = const [];
+  String? _error;
+  bool _captured = false;
 
   @override
   Widget build(BuildContext context) {
     final c = context.watch<RecorderController>();
-
+    final currentReference = c.currentRecordingReference;
+    final displayed = widget.reference == null
+        ? null
+        : c.recordingView(widget.reference!).reference;
+    final current =
+        widget.reference == null ||
+        currentReference != null &&
+            (currentReference.key == widget.reference!.key ||
+                currentReference.fileId != null &&
+                    currentReference.fileId == displayed?.fileId ||
+                currentReference.path != null &&
+                    currentReference.path == displayed?.path);
+    if (current) {
+      if (!_captured || c.recording) {
+        _owner = c.activeOwnerLanguage;
+        _guest = c.activeGuestLanguage;
+        _captured = true;
+      }
+      _ownerTurns = List.of(c.ownerTranslationTurns);
+      _guestTurns = List.of(c.guestTranslationTurns);
+      _error = c.transcriptError;
+    }
     return Scaffold(
       backgroundColor: AppColors.bg,
+      appBar: AppBar(title: const Text('双向交流')),
       body: SafeArea(
         child: Stack(
           fit: StackFit.expand,
@@ -25,8 +59,8 @@ class CommunicationScreen extends StatelessWidget {
                 Expanded(
                   child: _TranslationPanel(
                     key: const ValueKey('communication-owner-panel'),
-                    languageCode: c.ownerLanguage,
-                    turns: c.ownerTranslationTurns,
+                    languageCode: _owner,
+                    turns: _ownerTurns,
                     backgroundColor: const Color(0xFFF0F4FF),
                     accentColor: AppColors.accent,
                   ),
@@ -37,8 +71,8 @@ class CommunicationScreen extends StatelessWidget {
                     quarterTurns: 2,
                     child: _TranslationPanel(
                       key: const ValueKey('communication-guest-panel'),
-                      languageCode: c.guestLanguage,
-                      turns: c.guestTranslationTurns,
+                      languageCode: _guest,
+                      turns: _guestTurns,
                       backgroundColor: const Color(0xFFECFAF5),
                       accentColor: AppColors.mint,
                     ),
@@ -48,7 +82,11 @@ class CommunicationScreen extends StatelessWidget {
             ),
             Align(
               alignment: Alignment.center,
-              child: _CenterControls(controller: c),
+              child: _CenterControls(
+                controller: c,
+                current: current,
+                error: _error,
+              ),
             ),
           ],
         ),
@@ -176,16 +214,19 @@ class _TranslationPanel extends StatelessWidget {
 }
 
 class _CenterControls extends StatelessWidget {
-  const _CenterControls({required this.controller});
+  const _CenterControls({
+    required this.controller,
+    required this.current,
+    this.error,
+  });
 
   final RecorderController controller;
+  final bool current;
+  final String? error;
 
   @override
   Widget build(BuildContext context) {
     final c = controller;
-    final error =
-        c.transcriptError ??
-        (!c.sttConfigured ? '请先在设置中配置 SONIOX_API_KEY' : null);
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 360),
       child: Container(
@@ -206,23 +247,27 @@ class _CenterControls extends StatelessWidget {
                 Container(
                   width: 9,
                   height: 9,
-                  decoration: const BoxDecoration(
-                    color: AppColors.coral,
+                  decoration: BoxDecoration(
+                    color: current && c.recording
+                        ? AppColors.coral
+                        : AppColors.textMuted,
                     shape: BoxShape.circle,
                   ),
                 ),
                 const SizedBox(width: 8),
-                const Expanded(
+                Expanded(
                   child: Text(
-                    '交流 · Soniox',
+                    current && c.recording ? '交流 · Soniox' : '已暂停',
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
                   ),
                 ),
                 IconButton.filledTonal(
                   key: const ValueKey('communication-pause'),
                   tooltip: '暂停录音',
-                  visualDensity: VisualDensity.compact,
-                  onPressed: c.recording ? c.pauseRecord : null,
+
+                  onPressed: current && c.recording && c.phase != AppPhase.busy
+                      ? c.pauseRecord
+                      : null,
                   icon: const Icon(Icons.pause_rounded, size: 20),
                 ),
               ],
@@ -230,7 +275,7 @@ class _CenterControls extends StatelessWidget {
             if (error != null) ...[
               const SizedBox(height: 4),
               Text(
-                error,
+                error!,
                 key: const ValueKey('communication-error'),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,

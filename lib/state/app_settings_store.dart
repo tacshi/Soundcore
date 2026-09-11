@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../ai/stt_types.dart';
+import '../ai/speech_provider.dart';
 
 /// Lightweight JSON settings (Soniox API key, STT modes, toggles).
 class AppSettingsStore {
@@ -52,6 +53,8 @@ class AppSettingsStore {
 
 class AppSettings {
   const AppSettings({
+    this.speechProvider,
+    this.appleSourceLanguage = '',
     this.sonioxApiKey,
     this.autoTranscribe = true,
     this.autoRealtime = true,
@@ -63,6 +66,10 @@ class AppSettings {
   });
 
   final String? sonioxApiKey;
+
+  /// Null means an existing install has not selected a provider yet.
+  final SttProvider? speechProvider;
+  final String appleSourceLanguage;
   final bool autoTranscribe;
   final bool autoRealtime;
   final String transcriptLanguage;
@@ -72,6 +79,8 @@ class AppSettings {
   final String guestLanguage;
 
   AppSettings copyWith({
+    SttProvider? speechProvider,
+    String? appleSourceLanguage,
     String? sonioxApiKey,
     bool? autoTranscribe,
     bool? autoRealtime,
@@ -83,6 +92,8 @@ class AppSettings {
     bool clearSoniox = false,
   }) {
     return AppSettings(
+      speechProvider: speechProvider ?? this.speechProvider,
+      appleSourceLanguage: appleSourceLanguage ?? this.appleSourceLanguage,
       sonioxApiKey: clearSoniox ? null : (sonioxApiKey ?? this.sonioxApiKey),
       autoTranscribe: autoTranscribe ?? this.autoTranscribe,
       autoRealtime: autoRealtime ?? this.autoRealtime,
@@ -96,6 +107,8 @@ class AppSettings {
   }
 
   Map<String, dynamic> toJson() => {
+    if (speechProvider != null) 'speechProvider': speechProvider!.name,
+    'appleSourceLanguage': appleSourceLanguage,
     if (sonioxApiKey != null && sonioxApiKey!.isNotEmpty)
       'sonioxApiKey': sonioxApiKey,
     'autoTranscribe': autoTranscribe,
@@ -122,13 +135,14 @@ class AppSettings {
       guestLanguage = 'en';
     }
     return AppSettings(
+      speechProvider: SttProvider.parse(map['speechProvider']),
+      appleSourceLanguage: _str(map['appleSourceLanguage']) ?? '',
       sonioxApiKey: _str(map['sonioxApiKey']),
       autoTranscribe: map['autoTranscribe'] != false,
       autoRealtime: map['autoRealtime'] != false,
       transcriptLanguage: _str(map['transcriptLanguage']) ?? 'auto',
       sttMode: sttMode,
-      translationTargetLanguage:
-          (_str(map['translationTargetLanguage']) ?? 'zh').toLowerCase(),
+      translationTargetLanguage: _str(map['translationTargetLanguage']) ?? 'zh',
       ownerLanguage: ownerLanguage,
       guestLanguage: guestLanguage,
     );

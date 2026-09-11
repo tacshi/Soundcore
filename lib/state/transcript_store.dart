@@ -4,12 +4,15 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'recording.dart';
 
 typedef TranscriptStoreData = ({
   Map<String, String> byPath,
   Map<int, String> byFileId,
   Map<String, Map<String, String>> aliasesByPath,
   Map<int, Map<String, String>> aliasesByFileId,
+  Map<String, TranscriptMetadata> metadata,
+  Map<String, RecordingTranslation> translations,
 });
 
 /// Persists completed per-recording transcripts on the app device.
@@ -36,6 +39,8 @@ class TranscriptStore {
     byFileId: <int, String>{},
     aliasesByPath: <String, Map<String, String>>{},
     aliasesByFileId: <int, Map<String, String>>{},
+    metadata: <String, TranscriptMetadata>{},
+    translations: <String, RecordingTranslation>{},
   );
 
   static Future<TranscriptStoreData> load() async {
@@ -90,7 +95,31 @@ class TranscriptStore {
       byFileId: byFileId,
       aliasesByPath: aliasesByPath,
       aliasesByFileId: aliasesByFileId,
+      metadata: _decodeMetadata(json['metadata']),
+      translations: _decodeTranslations(json['translations']),
     );
+  }
+
+  static Map<String, TranscriptMetadata> _decodeMetadata(Object? value) {
+    if (value is! Map) return {};
+    return {
+      for (final entry in value.entries)
+        if (entry.key is String && entry.value is Map)
+          entry.key as String: TranscriptMetadata.fromJson(entry.value as Map),
+    };
+  }
+
+  static Map<String, RecordingTranslation> _decodeTranslations(Object? value) {
+    final output = <String, RecordingTranslation>{};
+    if (value is Map) {
+      for (final entry in value.entries) {
+        final translation = RecordingTranslation.decode(entry.value);
+        if (entry.key is String && translation != null) {
+          output[entry.key as String] = translation;
+        }
+      }
+    }
+    return output;
   }
 
   static Map<K, Map<String, String>> _decodeAliases<K>(
@@ -121,13 +150,17 @@ class TranscriptStore {
     required Map<int, String> byFileId,
     required Map<String, Map<String, String>> aliasesByPath,
     required Map<int, Map<String, String>> aliasesByFileId,
+    Map<String, TranscriptMetadata> metadata = const {},
+    Map<String, RecordingTranslation> translations = const {},
   }) {
     final paths = Map<String, String>.from(byPath);
     final ids = Map<int, String>.from(byFileId);
     final pathAliases = _copyAliases(aliasesByPath);
     final idAliases = _copyAliases(aliasesByFileId);
+    final meta = Map<String, TranscriptMetadata>.from(metadata);
+    final translated = Map<String, RecordingTranslation>.from(translations);
     _pendingSave = _pendingSave.then(
-      (_) => _write(paths, ids, pathAliases, idAliases),
+      (_) => _write(paths, ids, pathAliases, idAliases, meta, translated),
     );
     return _pendingSave;
   }
@@ -144,12 +177,19 @@ class TranscriptStore {
     required Map<int, String> byFileId,
     required Map<String, Map<String, String>> aliasesByPath,
     required Map<int, Map<String, String>> aliasesByFileId,
+    Map<String, TranscriptMetadata> metadata = const {},
+    Map<String, RecordingTranslation> translations = const {},
   }) => <String, dynamic>{
+    'version': 2,
     'byPath': byPath,
     'byFileId': byFileId.map((id, text) => MapEntry('$id', text)),
     'aliasesByPath': aliasesByPath,
     'aliasesByFileId': aliasesByFileId.map(
       (id, aliases) => MapEntry('$id', aliases),
+    ),
+    'metadata': metadata.map((key, value) => MapEntry(key, value.toJson())),
+    'translations': translations.map(
+      (key, value) => MapEntry(key, value.toJson()),
     ),
   };
 
@@ -158,6 +198,8 @@ class TranscriptStore {
     Map<int, String> byFileId,
     Map<String, Map<String, String>> aliasesByPath,
     Map<int, Map<String, String>> aliasesByFileId,
+    Map<String, TranscriptMetadata> metadata,
+    Map<String, RecordingTranslation> translations,
   ) async {
     try {
       final file = await _file();
@@ -166,13 +208,14 @@ class TranscriptStore {
         byFileId: byFileId,
         aliasesByPath: aliasesByPath,
         aliasesByFileId: aliasesByFileId,
+        metadata: metadata,
+        translations: translations,
       );
       final temporary = File('${file.path}.tmp');
       await temporary.writeAsString(
         const JsonEncoder.withIndent('  ').convert(json),
         flush: true,
       );
-      if (await file.exists()) await file.delete();
       await temporary.rename(file.path);
     } catch (e) {
       debugPrint('[TranscriptStore] save failed: $e');
