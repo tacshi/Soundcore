@@ -33,6 +33,7 @@ class InlinePlayer extends StatelessWidget {
     final progress = loaded ? c.playbackProgress : 0.0;
 
     return Column(
+      mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SliderTheme(
@@ -46,6 +47,7 @@ class InlinePlayer extends StatelessWidget {
             overlayColor: AppColors.accent.withValues(alpha: 0.12),
           ),
           child: Slider(
+            padding: const EdgeInsets.symmetric(vertical: 18),
             value: progress,
             onChanged: canSeek
                 ? (v) {
@@ -57,90 +59,90 @@ class InlinePlayer extends StatelessWidget {
                 : null,
           ),
         ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Row(
-            children: [
+        Row(
+          children: [
+            Text(
+              loaded ? _fmt(c.position) : '00:00',
+              style: const TextStyle(
+                fontSize: 11,
+                color: AppColors.textSecondary,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
+            ),
+            if (loaded) ...[
+              const Spacer(),
               Text(
-                loaded ? _fmt(c.position) : '00:00',
+                _fmt(c.duration),
                 style: const TextStyle(
                   fontSize: 11,
-                  color: AppColors.textMuted,
+                  color: AppColors.textSecondary,
                   fontFeatures: [FontFeature.tabularFigures()],
                 ),
               ),
-              if (loaded) ...[
-                const Spacer(),
-                Text(
-                  _fmt(c.duration),
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: AppColors.textMuted,
-                    fontFeatures: [FontFeature.tabularFigures()],
-                  ),
-                ),
-              ],
             ],
-          ),
+          ],
         ),
         const SizedBox(height: 4),
-        Row(
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8,
+          runSpacing: 4,
           children: [
-            Container(
-              constraints: const BoxConstraints(minWidth: 82, minHeight: 42),
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              decoration: BoxDecoration(
-                color: AppColors.bgElevated,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppColors.border),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<double>(
-                  value:
-                      RecorderController.playbackSpeeds.contains(
-                        c.playbackSpeed,
-                      )
-                      ? c.playbackSpeed
-                      : 1.0,
-                  isDense: true,
-                  iconSize: 22,
-                  dropdownColor: AppColors.bgCard,
-                  style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                  ),
-                  items: [
-                    for (final s in RecorderController.playbackSpeeds)
-                      DropdownMenuItem(value: s, child: Text(_speedLabel(s))),
+            PopupMenuButton<double>(
+              tooltip: '播放速度',
+              initialValue: c.playbackSpeed,
+              onSelected: c.setPlaybackSpeed,
+              itemBuilder: (_) => [
+                for (final speed in RecorderController.playbackSpeeds)
+                  PopupMenuItem(value: speed, child: Text(_speedLabel(speed))),
+              ],
+              child: Container(
+                constraints: const BoxConstraints(minWidth: 72, minHeight: 48),
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                decoration: BoxDecoration(
+                  color: AppColors.bgElevated,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _speedLabel(c.playbackSpeed),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 14,
+                      ),
+                    ),
+                    const Icon(Icons.expand_more_rounded, size: 20),
                   ],
-                  onChanged: (v) {
-                    if (v != null) c.setPlaybackSpeed(v);
-                  },
                 ),
               ),
             ),
-            Expanded(
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  _IconBtn(
-                    icon: Icons.replay_5_rounded,
-                    tooltip: '后退 5 秒',
-                    onPressed: canSeek
-                        ? () => c.seekBy(const Duration(seconds: -5))
-                        : null,
-                  ),
-                  const SizedBox(width: 6),
-                  Material(
-                    color: AppColors.accent,
-                    shape: const CircleBorder(),
-                    child: InkWell(
-                      customBorder: const CircleBorder(),
-                      onTap: () => c.playExported(path, fileId: fileId),
-                      child: SizedBox(
-                        width: 46,
-                        height: 46,
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _IconBtn(
+                  icon: Icons.replay_5_rounded,
+                  tooltip: '后退 5 秒',
+                  onPressed: canSeek
+                      ? () => c.seekBy(const Duration(seconds: -5))
+                      : null,
+                ),
+                const SizedBox(width: 2),
+                Material(
+                  color: AppColors.accent,
+                  shape: const CircleBorder(),
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: () => c.playExported(path, fileId: fileId),
+                    child: SizedBox(
+                      width: 52,
+                      height: 52,
+                      child: Tooltip(
+                        message: playing ? '暂停播放' : '播放录音',
                         child: Icon(
                           playing
                               ? Icons.pause_rounded
@@ -151,18 +153,17 @@ class InlinePlayer extends StatelessWidget {
                       ),
                     ),
                   ),
-                  const SizedBox(width: 6),
-                  _IconBtn(
-                    icon: Icons.forward_5_rounded,
-                    tooltip: '前进 5 秒',
-                    onPressed: canSeek
-                        ? () => c.seekBy(const Duration(seconds: 5))
-                        : null,
-                  ),
-                ],
-              ),
+                ),
+                const SizedBox(width: 2),
+                _IconBtn(
+                  icon: Icons.forward_5_rounded,
+                  tooltip: '前进 5 秒',
+                  onPressed: canSeek
+                      ? () => c.seekBy(const Duration(seconds: 5))
+                      : null,
+                ),
+              ],
             ),
-            const SizedBox(width: 56),
           ],
         ),
       ],

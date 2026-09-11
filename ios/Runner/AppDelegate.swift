@@ -12,6 +12,9 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    AppleSpeechBridge.shared.configure(
+      binaryMessenger: engineBridge.applicationRegistrar.messenger()
+    )
     RecordingShortcutBridge.shared.configure(
       binaryMessenger: engineBridge.applicationRegistrar.messenger()
     )
