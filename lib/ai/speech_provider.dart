@@ -1,6 +1,7 @@
 enum SttProvider {
   apple('Apple 设备端'),
-  soniox('Soniox');
+  soniox('Soniox'),
+  moss('MOSS Pro');
 
   const SttProvider(this.label);
   final String label;

@@ -56,7 +56,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
         ),
       );
     } catch (error) {
-      _notice('无法分享，请重试：$error');
+      _notice('无法分享，请重试');
     }
   }
 
@@ -78,7 +78,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
             : '保存失败，请重试',
       );
     } catch (error) {
-      _notice('无法保存，请重试：$error');
+      _notice('无法保存，请重试');
     }
   }
 
@@ -102,7 +102,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     try {
       await context.read<RecorderController>().renameLocalExport(path, label);
     } catch (error) {
-      _notice('无法重命名，请重试：$error');
+      _notice('无法重命名，请检查名称后重试');
     }
   }
 
@@ -240,7 +240,7 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
     try {
       await controller.renameTranscriptSpeaker(path, speaker.id, name);
     } catch (error) {
-      _notice('无法保存姓名，请重试：$error');
+      _notice('无法保存姓名，请重试');
     }
   }
 
@@ -415,7 +415,9 @@ class _RecordingDetailScreenState extends State<RecordingDetailScreen> {
                           recording.paused
                               ? '已暂停'
                               : recording.live
-                              ? '实时转写'
+                              ? (recording.provider == SttProvider.moss
+                                    ? '录音中'
+                                    : '实时转写')
                               : '转写文本',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -822,7 +824,9 @@ class _EmptyRecording extends StatelessWidget {
               : !recording.speechReady
               ? (recording.provider == SttProvider.apple
                     ? '在设置中下载并准备语音语言'
-                    : '在设置中配置 Soniox 后即可转写')
+                    : '请在设置中配置 ${recording.provider.label}')
+              : recording.provider == SttProvider.moss
+              ? '录音结束后生成文字'
               : '开始说话后，文字会显示在这里')
         : !local
         ? '下载录音后即可播放和转写'

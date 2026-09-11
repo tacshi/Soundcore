@@ -208,7 +208,7 @@ class _LocalExportsTabState extends State<_LocalExportsTab> {
       if (!context.mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('无法打开分享菜单：$error')));
+      ).showSnackBar(SnackBar(content: Text('无法打开分享菜单，请重试')));
     } finally {
       if (mounted) setState(() => _saving = false);
     }

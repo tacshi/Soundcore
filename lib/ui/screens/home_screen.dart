@@ -56,9 +56,9 @@ class _ConnectionHeader extends StatelessWidget {
   /// Prefer real connection/STT status; never keep a stale "正在播放" line.
   static String _idleStatus(RecorderController c) {
     final m = c.statusMessage;
-    if (m == null || m.isEmpty) return '已连接 · 可录音或浏览文件';
+    if (m == null || m.isEmpty) return '已连接';
     if (m.startsWith('正在播放') || m.startsWith('正在准备播放')) {
-      return '已连接 · 可录音或浏览文件';
+      return '已连接';
     }
     return m;
   }

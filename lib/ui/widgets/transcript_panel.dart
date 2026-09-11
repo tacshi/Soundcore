@@ -6,7 +6,7 @@ import '../../state/recorder_controller.dart';
 import '../../theme/app_theme.dart';
 import 'widgets.dart';
 
-/// Live / final AI transcript card.
+/// Live / final transcript card.
 ///
 /// Use [compact] on the live home view to avoid duplicating large chrome.
 class TranscriptPanel extends StatelessWidget {
@@ -42,7 +42,7 @@ class TranscriptPanel extends StatelessWidget {
           children: [
             if (!c.sttConfigured)
               Text(
-                '转写未就绪：在「设置」配置 SONIOX_API_KEY',
+                '请在设置中配置语音服务',
                 style: const TextStyle(color: AppColors.amber, fontSize: 12),
               )
             else if (hasText)
@@ -50,7 +50,7 @@ class TranscriptPanel extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      '使用 Soniox${c.streamingSttActive ? ' · 流式' : ''}',
+                      '转写',
                       style: const TextStyle(
                         color: AppColors.textMuted,
                         fontSize: 12,
@@ -91,10 +91,10 @@ class TranscriptPanel extends StatelessWidget {
               Expanded(
                 child: Text(
                   c.streamingSttActive
-                      ? 'AI 实时转写（Soniox）'
+                      ? '实时转写'
                       : c.transcribing
-                      ? 'AI 转写中（Soniox）…'
-                      : 'AI 转写 · Soniox',
+                      ? '正在转写…'
+                      : '转写',
                   style: const TextStyle(
                     fontWeight: FontWeight.w700,
                     fontSize: 13,
@@ -122,7 +122,7 @@ class TranscriptPanel extends StatelessWidget {
           if (!c.sttConfigured) ...[
             const SizedBox(height: 8),
             Text(
-              '未配置 SONIOX_API_KEY。请在「设置」查看说明。',
+              '请在设置中配置语音服务',
               style: const TextStyle(
                 color: AppColors.amber,
                 fontSize: 12,
@@ -185,8 +185,10 @@ class TranscriptPanel extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               c.streamingSttActive
-                  ? 'PCM 流式转写中 · 已解码 ${c.pcmFramesDecoded} 帧'
-                  : '录音时自动转写；也可对本地文件点「转写」。',
+                  ? '正在转写…'
+                  : c.speechProvider == SttProvider.moss
+                  ? '录音结束后生成文字'
+                  : '等待语音',
               style: const TextStyle(
                 color: AppColors.textMuted,
                 fontSize: 12,

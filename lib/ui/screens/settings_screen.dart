@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../ai/stt_types.dart';
+import '../../ai/moss_stt.dart';
 import '../../ai/apple_speech.dart';
 import '../../ai/soniox_languages.dart';
 import '../../state/recorder_controller.dart';
@@ -42,7 +43,9 @@ class SettingsScreen extends StatelessWidget {
                 children: [
                   _SettingsSwitch(
                     title: '自动转写',
-                    subtitle: '录音时生成文字',
+                    subtitle: c.speechProvider == SttProvider.moss
+                        ? '录音结束后生成文字'
+                        : '录音时生成文字',
                     value: c.autoTranscribe,
                     onChanged: c.setAutoTranscribe,
                   ),
@@ -53,14 +56,14 @@ class SettingsScreen extends StatelessWidget {
                     _ApiKeyField(
                       key: const ValueKey('apikey-soniox'),
                       label: 'Soniox API Key',
-                      envName: 'SONIOX_API_KEY',
                       initialValue: c.sonioxApiKeyStored ?? '',
-                      configured: c.sonioxConfigured,
                       onSave: c.setSonioxApiKey,
                     ),
                     const SizedBox(height: 14),
                     _TranscriptLanguageSelector(controller: c),
-                  ] else
+                  ] else if (c.speechProvider == SttProvider.moss)
+                    _MossKeyField(controller: c)
+                  else
                     _AppleLanguageSettings(controller: c),
                   if (c.isLiveSession) ...[
                     const SizedBox(height: 12),
@@ -72,14 +75,18 @@ class SettingsScreen extends StatelessWidget {
                       ),
                     ),
                   ],
-                  const Divider(height: 28),
-                  _SttModeSelector(controller: c),
+                  if (c.speechProvider != SttProvider.moss) ...[
+                    const Divider(height: 28),
+                    _SttModeSelector(controller: c),
+                  ],
+                  if (c.mossRecoveryError != null) Text(c.mossRecoveryError!),
                   if (c.sttMode == SttDisplayMode.translation &&
                       c.speechProvider == SttProvider.soniox) ...[
                     const SizedBox(height: 14),
                     _TranslationLanguageSettings(controller: c),
                   ],
-                  if (c.sttMode == SttDisplayMode.conversation) ...[
+                  if (c.speechProvider == SttProvider.soniox &&
+                      c.sttMode == SttDisplayMode.conversation) ...[
                     const SizedBox(height: 14),
                     _CommunicationLanguageSettings(controller: c),
                   ],
@@ -329,11 +336,12 @@ class _SttModeSelector extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = controller;
+    final soniox = c.speechProvider == SttProvider.soniox;
     final subtitle = !c.autoTranscribe
         ? '请先开启自动转写'
-        : c.speechProvider == SttProvider.apple
-        ? '双向交流需要 Soniox'
-        : '翻译为单向，交流为双向';
+        : soniox
+        ? '翻译为单向，交流为双向'
+        : null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -341,15 +349,17 @@ class _SttModeSelector extends StatelessWidget {
           '实时模式',
           style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
         ),
-        const SizedBox(height: 3),
-        Text(
-          subtitle,
-          style: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 12,
-            height: 1.3,
+        if (subtitle != null) ...[
+          const SizedBox(height: 3),
+          Text(
+            subtitle,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 12,
+              height: 1.3,
+            ),
           ),
-        ),
+        ],
         const SizedBox(height: 10),
         SegmentedButton<SttDisplayMode>(
           key: const ValueKey('stt-display-mode-selector'),
@@ -367,11 +377,12 @@ class _SttModeSelector extends StatelessWidget {
                       ? c.appleTranslationAvailable
                       : c.sonioxTranslationModeAvailable),
             ),
-            ButtonSegment(
-              value: SttDisplayMode.conversation,
-              label: const Text('交流'),
-              enabled: c.conversationModeAvailable,
-            ),
+            if (soniox)
+              ButtonSegment(
+                value: SttDisplayMode.conversation,
+                label: const Text('交流'),
+                enabled: c.conversationModeAvailable,
+              ),
           ],
           selected: {c.sttMode},
           showSelectedIcon: false,
@@ -642,16 +653,12 @@ class _ApiKeyField extends StatefulWidget {
   const _ApiKeyField({
     super.key,
     required this.label,
-    required this.envName,
     required this.initialValue,
-    required this.configured,
     required this.onSave,
   });
 
   final String label;
-  final String envName;
   final String initialValue;
-  final bool configured;
   final ValueChanged<String?> onSave;
 
   @override
@@ -705,12 +712,6 @@ class _ApiKeyFieldState extends State<_ApiKeyField> {
       children: [
         Row(
           children: [
-            Icon(
-              widget.configured ? Icons.verified_rounded : Icons.key_outlined,
-              size: 16,
-              color: widget.configured ? AppColors.mint : AppColors.amber,
-            ),
-            const SizedBox(width: 6),
             Expanded(
               child: Text(
                 widget.label,
@@ -718,14 +719,6 @@ class _ApiKeyFieldState extends State<_ApiKeyField> {
                   fontWeight: FontWeight.w700,
                   fontSize: 13,
                 ),
-              ),
-            ),
-            Text(
-              widget.configured ? '已配置' : '未配置',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: widget.configured ? AppColors.mint : AppColors.amber,
               ),
             ),
           ],
@@ -792,7 +785,6 @@ class _ApiKeyFieldState extends State<_ApiKeyField> {
             if (!_dirty) setState(() => _dirty = true);
           },
           onSubmitted: (_) => _commit(),
-          onEditingComplete: _commit,
         ),
         if (_dirty) ...[
           const SizedBox(height: 8),
@@ -806,16 +798,88 @@ class _ApiKeyFieldState extends State<_ApiKeyField> {
             ),
           ),
         ],
-        const SizedBox(height: 6),
-        Text(
-          '环境变量：export ${widget.envName}=…',
-          style: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 10,
-            height: 1.3,
-          ),
-        ),
       ],
     );
   }
+}
+
+class _MossKeyField extends StatefulWidget {
+  const _MossKeyField({required this.controller});
+  final RecorderController controller;
+  @override
+  State<_MossKeyField> createState() => _MossKeyFieldState();
+}
+
+class _MossKeyFieldState extends State<_MossKeyField> {
+  late final TextEditingController _text = TextEditingController(
+    text: widget.controller.mossApiKeyStored ?? '',
+  );
+  bool _busy = false;
+  String? _message;
+  Future<void> _save() async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
+    try {
+      await widget.controller.validateAndSaveMossApiKey(_text.text);
+      if (mounted) setState(() => _message = 'MOSS API Key 已保存');
+    } catch (error) {
+      if (mounted) {
+        setState(
+          () => _message = error is MossException ? error.message : '无法保存，请重试',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      TextField(
+        key: const ValueKey('apikey-moss'),
+        controller: _text,
+        enabled: !_busy,
+        obscureText: true,
+        autocorrect: false,
+        enableSuggestions: false,
+        decoration: InputDecoration(
+          labelText: 'MOSS API Key',
+          suffixIcon: widget.controller.mossApiKeyStored == null
+              ? null
+              : IconButton(
+                  tooltip: '清除',
+                  onPressed: _busy
+                      ? null
+                      : () {
+                          widget.controller.clearMossApiKey();
+                          _text.clear();
+                          setState(() => _message = 'MOSS API Key 已清除');
+                        },
+                  icon: const Icon(Icons.clear_rounded),
+                ),
+        ),
+        onSubmitted: (_) => _save(),
+      ),
+      const SizedBox(height: 12),
+      Align(
+        alignment: Alignment.centerRight,
+        child: FilledButton(
+          onPressed: _busy ? null : _save,
+          child: Text(_busy ? '正在验证…' : '验证并保存'),
+        ),
+      ),
+      if (_message != null) ...[const SizedBox(height: 8), Text(_message!)],
+    ],
+  );
 }
