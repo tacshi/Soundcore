@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:anker_recorder/state/recorder_controller.dart';
 import 'package:anker_recorder/protocol/models.dart';
 import 'package:anker_recorder/ui/screens/files_screen.dart';
+import 'package:anker_recorder/ui/screens/recording_detail_screen.dart';
 import 'package:anker_recorder/ui/widgets/widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -11,6 +12,10 @@ import 'package:provider/provider.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  Finder iconButton(String tooltip) => find.byWidgetPredicate(
+    (widget) => widget is IconButton && widget.tooltip == tooltip,
+  );
 
   Future<void> pumpFiles(
     WidgetTester tester,
@@ -70,6 +75,73 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets(
+    'device download stays available while another file auto transfers',
+    (tester) async {
+      final c = _AutoTransferController();
+      addTearDown(c.dispose);
+      await pumpFiles(tester, c);
+      await tester.tap(find.text('设备端 (2)'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump();
+      expect(find.byTooltip('正在下载'), findsOneWidget);
+      final download = iconButton('通过蓝牙下载');
+      expect(tester.widget<IconButton>(download).onPressed, isNotNull);
+      await tester.tap(download);
+      await tester.pump();
+      expect(c.downloadingFileId, 102);
+    },
+  );
+
+  testWidgets(
+    'detail download shows progress and enables sharing while backlog continues',
+    (tester) async {
+      final c = _AutoTransferController();
+      addTearDown(c.dispose);
+      await tester.pumpWidget(
+        ChangeNotifierProvider<RecorderController>.value(
+          value: c,
+          child: const MaterialApp(
+            home: RecordingDetailScreen(
+              reference: RecordingReference(fileId: 102),
+            ),
+          ),
+        ),
+      );
+      expect(
+        tester.widget<IconButton>(iconButton('分享录音')).onPressed,
+        isNull,
+      );
+      await tester.tap(find.text('下载录音'));
+      await tester.pump();
+      expect(c.downloadingFileId, 102);
+      expect(find.text('下载中…'), findsOneWidget);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+      c.finishDownload();
+      await tester.pump();
+      expect(c.autoTransferActive, isTrue);
+      expect(find.text('下载中…'), findsNothing);
+      expect(
+        tester.widget<IconButton>(iconButton('分享录音')).onPressed,
+        isNotNull,
+      );
+      await tester.tap(find.byTooltip('更多操作'));
+      await tester.pump();
+      expect(
+        tester
+            .widget<PopupMenuItem<String>>(
+              find.ancestor(
+                of: find.text('保存录音'),
+                matching: find.byType(PopupMenuItem<String>),
+              ),
+            )
+            .enabled,
+        isTrue,
+      );
+    },
+  );
 
   for (final device in [false, true]) {
     for (final populated in [false, true]) {
@@ -300,6 +372,36 @@ class _TrackingRecorderController extends RecorderController {
     bool prepareLanguages = false,
   }) async {
     transcribeCalls++;
+  }
+}
+
+class _AutoTransferController extends RecorderController {
+  _AutoTransferController() : super(loadPersistedState: false) {
+    connected = true;
+    phase = AppPhase.busy;
+    files = [
+      OfflineFileEntry(fileId: 103, sizeBytes: 160),
+      OfflineFileEntry(fileId: 102, sizeBytes: 160),
+    ];
+  }
+
+  @override
+  bool get autoTransferActive => true;
+  @override
+  int? get activeBleDownloadFileId => downloadingFileId ?? 103;
+  @override
+  Future<void> downloadFileOverBle(OfflineFileEntry file) async {
+    downloadingFileId = file.fileId;
+    notifyListeners();
+  }
+
+  void finishDownload() {
+    final id = downloadingFileId!;
+    final path = '/tmp/$id.wav';
+    exportedPaths.add(path);
+    localPathsByFileId[id] = path;
+    downloadingFileId = null;
+    notifyListeners();
   }
 }
 

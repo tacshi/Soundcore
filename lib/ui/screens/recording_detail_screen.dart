@@ -1138,13 +1138,14 @@ class _DeviceDownload extends StatelessWidget {
     final id = recording.reference.fileId;
     if (id == null) return const SizedBox.shrink();
     final file = c.files.where((file) => file.fileId == id).firstOrNull;
+    final downloading = c.activeBleDownloadFileId == id;
     return Padding(
       padding: const EdgeInsets.only(bottom: 20),
       child: Column(
         children: [
           FilledButton.icon(
             onPressed: c.connected
-                ? (file != null && c.downloadingFileId == null
+                ? (file != null && c.canDownloadOverBle && !downloading
                       ? () => c.downloadFileOverBle(file)
                       : null)
                 : () => showScanDevicesSheet(context),
@@ -1154,12 +1155,12 @@ class _DeviceDownload extends StatelessWidget {
             label: Text(
               !c.connected
                   ? '连接设备'
-                  : c.downloadingFileId == id
+                  : downloading
                   ? '下载中…'
                   : '下载录音',
             ),
           ),
-          if (c.downloadingFileId == id) ...[
+          if (downloading) ...[
             const SizedBox(height: 12),
             const LinearProgressIndicator(minHeight: 3),
           ],

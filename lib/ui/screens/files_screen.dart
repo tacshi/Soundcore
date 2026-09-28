@@ -593,7 +593,7 @@ class _DeviceFilesTab extends StatelessWidget {
                       final f = c.files[i];
                       final selected = c.selectedFileIds.contains(f.fileId);
                       final hasLocal = c.localPathFor(f.fileId) != null;
-                      final downloading = c.downloadingFileId == f.fileId;
+                      final downloading = c.activeBleDownloadFileId == f.fileId;
                       final locked = c
                           .recordingView(
                             RecordingReference(
@@ -629,7 +629,11 @@ class _DeviceFilesTab extends StatelessWidget {
                                   c.toggleFileSelected(f.fileId);
                                 }
                               },
-                        onExport: busy || hasLocal || locked
+                        onExport:
+                            !c.canDownloadOverBle ||
+                                downloading ||
+                                hasLocal ||
+                                locked
                             ? null
                             : () => c.downloadFileOverBle(f),
                         onDelete: busy || locked
@@ -1494,7 +1498,7 @@ class _DeviceFileTile extends StatelessWidget {
                           hasLocal
                               ? Icons.download_done_rounded
                               : Icons.download_rounded,
-                          color: hasLocal
+                          color: hasLocal || onExport == null
                               ? AppColors.textMuted
                               : AppColors.mint,
                         ),
