@@ -2204,7 +2204,21 @@ class RecorderController extends ChangeNotifier {
   /// Auto BLE realtime transfer while device is recording (no SoftAP).
   bool autoRealtime = true;
   bool _autoTransferRunning = false;
+  Completer<void>? _autoTransferDone;
+  bool _autoTransferYieldRequested = false;
+  int? _autoDownloadingFileId;
   bool get autoTransferActive => _autoTransferRunning;
+  int? get activeBleDownloadFileId =>
+      downloadingFileId ?? _autoDownloadingFileId;
+  bool get canDownloadOverBle =>
+      connected &&
+      !_liveProcessing &&
+      !realtimeState.active &&
+      downloadingFileId == null &&
+      !isWifiExportSession &&
+      !isExporting &&
+      phase != AppPhase.connecting &&
+      (phase != AppPhase.busy || autoTransferActive);
   bool get blocksRecordingControl =>
       phase == AppPhase.busy && !_autoTransferRunning;
   RealtimeStreamState realtimeState = const RealtimeStreamState();
@@ -2801,7 +2815,7 @@ class RecorderController extends ChangeNotifier {
   Future<bool> _startRecordChecked() async {
     await _settingsLoaded;
     if (_disposed) return false;
-    await _yieldBacklogToCurrentRecording();
+    await _yieldAutoTransfer();
     final sent = await _sendChecked(
       DeviceCommands.startRecord(),
       label: '正在开始录音…',
@@ -2954,7 +2968,7 @@ class RecorderController extends ChangeNotifier {
     if (!connected || !_ble.isConnected) return;
     if (isWifiExportSession) return;
     final recordingNow = recording || info?.recording == true;
-    if (recordingNow) await _yieldBacklogToCurrentRecording();
+    if (recordingNow) await _yieldAutoTransfer();
 
     if (!encryptReady) {
       await establishEncryptSession();
@@ -3016,19 +3030,20 @@ class RecorderController extends ChangeNotifier {
 
   Future<void> _startCurrentRecordingTransfer(int fileId) async {
     _bindCurrentRecording(fileId: fileId);
-    await _yieldBacklogToCurrentRecording();
+    await _yieldAutoTransfer();
     if (!connected || !_ble.isConnected) return;
     if (!recording && info?.recording != true) return;
     await _realtime.startForFile(fileId);
   }
 
-  Future<void> _yieldBacklogToCurrentRecording() async {
-    if (!_autoTransferRunning) return;
+  Future<void> _yieldAutoTransfer() async {
+    final done = _autoTransferDone;
+    if (done == null) return;
+    _autoTransferYieldRequested = true;
     _blePull.cancel();
-    final deadline = DateTime.now().add(const Duration(seconds: 2));
-    while (_autoTransferRunning && DateTime.now().isBefore(deadline)) {
-      await Future<void>.delayed(const Duration(milliseconds: 40));
-    }
+    // Wait for the old sink and packet subscription to close before another
+    // caller takes ownership of the shared BLE puller.
+    await done.future;
   }
 
   var _fileListPage = 0;
@@ -3180,7 +3195,7 @@ class RecorderController extends ChangeNotifier {
   }
 
   void _scheduleAutoTransferMissing() {
-    if (!autoRealtime || _autoTransferRunning) return;
+    if (_disposed || !autoRealtime || _autoTransferRunning) return;
     unawaited(
       Future<void>.delayed(
         const Duration(milliseconds: 200),
@@ -3192,13 +3207,16 @@ class RecorderController extends ChangeNotifier {
   /// Catch up completed recordings over BLE without interrupting the current
   /// recording/realtime stream. Device and local lists remain newest-first.
   Future<void> _autoTransferMissingFiles() async {
-    if (_autoTransferRunning || !autoRealtime) return;
+    if (_disposed || _autoTransferRunning || !autoRealtime) return;
+    if (_loadingFileListPages || downloadingFileId != null) return;
     if (!connected || !_ble.isConnected || files.isEmpty) return;
     if (recording || info?.recording == true || realtimeState.active) return;
     if (isWifiExportSession || isExporting) return;
     if (phase == AppPhase.connecting || phase == AppPhase.busy) return;
 
     _autoTransferRunning = true;
+    final done = _autoTransferDone = Completer<void>();
+    _autoTransferYieldRequested = false;
     notifyListeners();
     var exported = 0;
     final failed = <int>[];
@@ -3206,27 +3224,33 @@ class RecorderController extends ChangeNotifier {
       await _loadLocalExports(notify: false);
       final completeIds = await _completeLocalExportIds(files);
       final missing = ExportCatalog.unexportedNewestFirst(files, completeIds);
+      if (_shouldYieldAutoTransfer) return;
       if (missing.isEmpty) {
         statusMessage = '已导出录音已是最新';
         return;
       }
 
       if (!encryptReady) await establishEncryptSession();
-      if (!connected || !_ble.isConnected) return;
+      if (_shouldYieldAutoTransfer) return;
       phase = AppPhase.busy;
 
-      for (var i = 0; i < missing.length; i++) {
-        if (!autoRealtime || !connected || !_ble.isConnected) break;
-        // A recording that starts while catching up cancels this backlog pull.
-        if (recording || info?.recording == true || realtimeState.active) break;
-        final file = missing[i];
+      for (final file in missing) {
+        if (_shouldYieldAutoTransfer) break;
+        _autoDownloadingFileId = file.fileId;
+        String progressMessage([String progress = '']) {
+          final deviceIds = files.map((file) => file.fileId).toSet();
+          final completed = deviceIds.intersection(completeIds).length;
+          return '自动传输 $completed/${deviceIds.length}$progress · ${file.title}';
+        }
+
         var lastProgressAt = DateTime.fromMillisecondsSinceEpoch(0);
         try {
-          statusMessage = '自动传输 ${i + 1}/${missing.length} · ${file.title}';
+          statusMessage = progressMessage();
           notifyListeners();
           final rawPath = await _blePull.pullFile(
             file,
             onProgress: (received, expected) {
+              if (_shouldYieldAutoTransfer) return;
               final now = DateTime.now();
               if (now.difference(lastProgressAt) <
                   const Duration(milliseconds: 250)) {
@@ -3236,14 +3260,15 @@ class RecorderController extends ChangeNotifier {
               final progress = expected > 0
                   ? ' ${(received * 100 / expected).clamp(0, 100).floor()}%'
                   : '';
-              statusMessage =
-                  '自动传输 ${i + 1}/${missing.length}$progress · ${file.title}';
+              statusMessage = progressMessage(progress);
               notifyListeners();
             },
           );
           final path = await _convertExportToWav(rawPath, register: false);
           _registerExportedPaths([path]);
+          completeIds.add(file.fileId);
           exported++;
+          if (!_shouldYieldAutoTransfer) statusMessage = progressMessage();
           notifyListeners();
         } on BleFilePullCancelled {
           break;
@@ -3260,17 +3285,35 @@ class RecorderController extends ChangeNotifier {
       if (failed.isNotEmpty) {
         errorMessage = '有 ${failed.length} 条录音自动传输失败，刷新后将重试';
       }
-      statusMessage = exported > 0
-          ? '已自动传输 $exported 条录音'
-          : failed.isEmpty
-          ? statusMessage
-          : '自动传输未完成';
+      if (!_autoTransferYieldRequested) {
+        statusMessage = exported > 0
+            ? '已自动传输 $exported 条录音'
+            : failed.isEmpty
+            ? statusMessage
+            : '自动传输未完成';
+      }
     } finally {
+      _autoDownloadingFileId = null;
       _autoTransferRunning = false;
-      phase = connected ? AppPhase.ready : AppPhase.idle;
+      _autoTransferDone = null;
+      if (downloadingFileId == null) {
+        phase = connected ? AppPhase.ready : AppPhase.idle;
+      }
+      done.complete();
       notifyListeners();
     }
   }
+
+  bool get _shouldYieldAutoTransfer =>
+      _disposed ||
+      _autoTransferYieldRequested ||
+      !autoRealtime ||
+      !connected ||
+      !_ble.isConnected ||
+      downloadingFileId != null ||
+      recording ||
+      info?.recording == true ||
+      realtimeState.active;
 
   /// On-demand single-file download over BLE — no Wi‑Fi SoftAP setup needed.
   /// Wi‑Fi export is only worth the join dance for multiple files at once.
@@ -3286,18 +3329,27 @@ class RecorderController extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    if (isWifiExportSession || isExporting) return;
-    if (phase == AppPhase.connecting || phase == AppPhase.busy) return;
+    if (!canDownloadOverBle) {
+      errorMessage = '当前传输结束后再下载';
+      notifyListeners();
+      return;
+    }
 
     downloadingFileId = file.fileId;
+    phase = AppPhase.busy;
     errorMessage = null;
     statusMessage = '正在下载 ${file.title}…';
     notifyListeners();
     var lastProgressAt = DateTime.fromMillisecondsSinceEpoch(0);
     try {
-      await _yieldBacklogToCurrentRecording();
+      await _yieldAutoTransfer();
+      // The auto transfer may have finished this file while yielding.
+      if ((await _completeLocalExportIds([file])).contains(file.fileId)) {
+        statusMessage = '已下载 ${file.title}';
+        return;
+      }
       if (!encryptReady) await establishEncryptSession();
-      if (!connected || !_ble.isConnected) return;
+      if (!connected || !_ble.isConnected || _liveProcessing) return;
 
       phase = AppPhase.busy;
       notifyListeners();
@@ -3329,6 +3381,7 @@ class RecorderController extends ChangeNotifier {
       downloadingFileId = null;
       phase = connected ? AppPhase.ready : AppPhase.idle;
       notifyListeners();
+      _scheduleAutoTransferMissing();
     }
   }
 
