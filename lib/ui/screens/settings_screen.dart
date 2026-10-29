@@ -43,7 +43,7 @@ class SettingsScreen extends StatelessWidget {
                 children: [
                   _SettingsSwitch(
                     title: '自动转写',
-                    subtitle: c.speechProvider == SttProvider.moss
+                    subtitle: c.speechProvider.fileOnly
                         ? '录音结束后生成文字'
                         : '录音时生成文字',
                     value: c.autoTranscribe,
@@ -63,7 +63,37 @@ class SettingsScreen extends StatelessWidget {
                     _TranscriptLanguageSelector(controller: c),
                   ] else if (c.speechProvider == SttProvider.moss)
                     _MossKeyField(controller: c)
-                  else
+                  else if (c.speechProvider == SttProvider.xfyun) ...[
+                    _ApiKeyField(
+                      key: const ValueKey('apikey-xfyun'),
+                      label: '讯飞 APPID:SecretKey',
+                      initialValue: c.xfyunCredentialStored ?? '',
+                      onSave: c.setXfyunCredential,
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      '在讯飞开放平台「录音文件转写」控制台获取 APPID 和 SecretKey，用英文冒号连接',
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ] else if (c.speechProvider == SttProvider.volc) ...[
+                    _ApiKeyField(
+                      key: const ValueKey('apikey-volc'),
+                      label: '火山 APP ID:Access Token',
+                      initialValue: c.volcCredentialStored ?? '',
+                      onSave: c.setVolcCredential,
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      '在火山引擎豆包语音控制台开通「录音文件识别极速版」，获取 APP ID 和 Access Token，用英文冒号连接',
+                      style: TextStyle(
+                        color: AppColors.textSecondary,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ] else
                     _AppleLanguageSettings(controller: c),
                   if (c.isLiveSession) ...[
                     const SizedBox(height: 12),
@@ -75,7 +105,7 @@ class SettingsScreen extends StatelessWidget {
                       ),
                     ),
                   ],
-                  if (c.speechProvider != SttProvider.moss) ...[
+                  if (!c.speechProvider.fileOnly) ...[
                     const Divider(height: 28),
                     _SttModeSelector(controller: c),
                   ],

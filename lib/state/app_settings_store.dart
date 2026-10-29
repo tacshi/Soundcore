@@ -63,6 +63,8 @@ class AppSettings {
     this.appleSourceLanguage = '',
     this.sonioxApiKey,
     this.mossApiKey,
+    this.xfyunCredential,
+    this.volcCredential,
     this.autoTranscribe = true,
     this.autoRealtime = true,
     this.transcriptLanguage = 'auto',
@@ -74,6 +76,8 @@ class AppSettings {
 
   final String? sonioxApiKey;
   final String? mossApiKey;
+  final String? xfyunCredential;
+  final String? volcCredential;
 
   /// Null means an existing install has not selected a provider yet.
   final SttProvider? speechProvider;
@@ -105,6 +109,8 @@ class AppSettings {
       speechProvider: speechProvider ?? this.speechProvider,
       appleSourceLanguage: appleSourceLanguage ?? this.appleSourceLanguage,
       mossApiKey: clearMoss ? null : (mossApiKey ?? this.mossApiKey),
+      xfyunCredential: xfyunCredential,
+      volcCredential: volcCredential,
       sonioxApiKey: clearSoniox ? null : (sonioxApiKey ?? this.sonioxApiKey),
       autoTranscribe: autoTranscribe ?? this.autoTranscribe,
       autoRealtime: autoRealtime ?? this.autoRealtime,
@@ -123,6 +129,10 @@ class AppSettings {
     if (sonioxApiKey != null && sonioxApiKey!.isNotEmpty)
       'sonioxApiKey': sonioxApiKey,
     if (mossApiKey != null && mossApiKey!.isNotEmpty) 'mossApiKey': mossApiKey,
+    if (xfyunCredential != null && xfyunCredential!.isNotEmpty)
+      'xfyunCredential': xfyunCredential,
+    if (volcCredential != null && volcCredential!.isNotEmpty)
+      'volcCredential': volcCredential,
     'autoTranscribe': autoTranscribe,
     'autoRealtime': autoRealtime,
     'transcriptLanguage': transcriptLanguage,
@@ -151,6 +161,8 @@ class AppSettings {
       appleSourceLanguage: _str(map['appleSourceLanguage']) ?? '',
       sonioxApiKey: _str(map['sonioxApiKey']),
       mossApiKey: _str(map['mossApiKey']),
+      xfyunCredential: _str(map['xfyunCredential']),
+      volcCredential: _str(map['volcCredential']),
       autoTranscribe: map['autoTranscribe'] != false,
       autoRealtime: map['autoRealtime'] != false,
       transcriptLanguage: _str(map['transcriptLanguage']) ?? 'auto',

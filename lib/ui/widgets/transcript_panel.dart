@@ -186,7 +186,7 @@ class TranscriptPanel extends StatelessWidget {
             Text(
               c.streamingSttActive
                   ? '正在转写…'
-                  : c.speechProvider == SttProvider.moss
+                  : c.speechProvider.fileOnly
                   ? '录音结束后生成文字'
                   : '等待语音',
               style: const TextStyle(

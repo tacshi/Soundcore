@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../ai/soniox_stt.dart';
+import '../ai/china_stt.dart';
 import '../ai/moss_stt.dart';
 import '../ai/soniox_stt_stream.dart';
 import '../ai/soniox_languages.dart';
@@ -62,6 +63,8 @@ class RecorderController extends ChangeNotifier {
        _appleSpeech = appleSpeech ?? AppleSpeechService(),
        _sonioxStt = sonioxSpeech ?? SonioxSttService(),
        _mossStt = mossSpeech ?? MossSttService(),
+       _xfyunStt = XfyunSttService(),
+       _volcStt = VolcSttService(),
        _persistedDeviceLoader = persistedDeviceLoader ?? DeviceStore.load {
     _subs.add(
       _ble.scanResults.listen((list) {
@@ -293,6 +296,8 @@ class RecorderController extends ChangeNotifier {
     final s = await AppSettingsStore.load();
     if (s.sonioxApiKey != null) _sonioxStt.apiKeyOverride = s.sonioxApiKey;
     _mossStt.apiKeyOverride = s.mossApiKey;
+    _xfyunStt.credentialOverride = s.xfyunCredential;
+    _volcStt.credentialOverride = s.volcCredential;
     autoTranscribe = s.autoTranscribe;
     autoRealtime = s.autoRealtime;
     transcriptLanguage = s.transcriptLanguage;
@@ -316,7 +321,7 @@ class RecorderController extends ChangeNotifier {
       appleSupported: appleCapabilities.supported,
       sonioxConfigured: _sonioxStt.isConfigured,
     );
-    if (speechProvider == SttProvider.moss ||
+    if (speechProvider.fileOnly ||
         (speechProvider == SttProvider.apple &&
             sttMode == SttDisplayMode.conversation)) {
       sttMode = SttDisplayMode.transcription;
@@ -332,6 +337,8 @@ class RecorderController extends ChangeNotifier {
         appleSourceLanguage: appleSourceLanguage,
         sonioxApiKey: _sonioxStt.apiKeyOverride,
         mossApiKey: _mossStt.apiKeyOverride,
+        xfyunCredential: _xfyunStt.credentialOverride,
+        volcCredential: _volcStt.credentialOverride,
         autoTranscribe: autoTranscribe,
         autoRealtime: autoRealtime,
         transcriptLanguage: transcriptLanguage,
@@ -429,7 +436,7 @@ class RecorderController extends ChangeNotifier {
   void setSpeechProvider(SttProvider provider) {
     if (provider == speechProvider) return;
     speechProvider = provider;
-    if (provider == SttProvider.moss ||
+    if (provider.fileOnly ||
         (provider == SttProvider.apple &&
             sttMode == SttDisplayMode.conversation)) {
       sttMode = SttDisplayMode.transcription;
@@ -455,14 +462,14 @@ class RecorderController extends ChangeNotifier {
     targetLanguage: translationTargetLanguage,
     ownerLanguage: ownerLanguage,
     guestLanguage: guestLanguage,
-    mode: speechProvider == SttProvider.moss
-        ? SttDisplayMode.transcription
-        : sttMode,
+    mode: speechProvider.fileOnly ? SttDisplayMode.transcription : sttMode,
     enabled: autoTranscribe,
     appleReady: appleSpeechReady,
     appleTranslationReady: appleTranslationAvailable,
     sonioxKey: _sonioxStt.apiKey,
     mossKey: _mossStt.apiKey,
+    xfyunKey: _xfyunStt.credential,
+    volcKey: _volcStt.credential,
   );
 
   _RecordingSession? get _currentRecording =>
@@ -482,6 +489,10 @@ class RecorderController extends ChangeNotifier {
       ? config.appleReady && config.sourceLanguage.isNotEmpty
       : config.provider == SttProvider.moss
       ? config.mossKey?.isNotEmpty == true
+      : config.provider == SttProvider.xfyun
+      ? parseAppCredential(config.xfyunKey) != null
+      : config.provider == SttProvider.volc
+      ? parseAppCredential(config.volcKey) != null
       : config.sonioxKey?.isNotEmpty == true;
   bool get _activeSttConfigured => _isConfigured(_activeConfiguration);
   bool get _activeAutoTranscribe => _activeConfiguration.enabled;
@@ -688,6 +699,7 @@ class RecorderController extends ChangeNotifier {
 
   String _speechErrorMessage(Object error) {
     if (error is MossException) return error.message;
+    if (error is ChinaSttException) return error.message;
     final code = error is PlatformException ? error.code : error.toString();
     return switch (code) {
       'unsupported' => '此设备不支持设备端处理，请在设置中选择云端语音服务',
@@ -993,6 +1005,13 @@ class RecorderController extends ChangeNotifier {
           if (owner?.configuration.provider == SttProvider.moss) {
             owner!.finalizing = false;
             unawaited(_enqueueMossRecording(owner, finishedPath));
+          } else if (owner != null &&
+              (owner.configuration.provider == SttProvider.xfyun ||
+                  owner.configuration.provider == SttProvider.volc) &&
+              owner.configuration.enabled &&
+              _isConfigured(owner.configuration)) {
+            owner.finalizing = false;
+            unawaited(transcribeLocalFile(finishedPath));
           }
           notifyListeners();
         }),
@@ -1168,7 +1187,7 @@ class RecorderController extends ChangeNotifier {
 
   /// Live BLE Opus frame → PCM16 → provider WS STT (when auto-transcribe on).
   void _onRealtimeOpusFrame(Uint8List frame) {
-    if (_activeConfiguration.provider == SttProvider.moss ||
+    if (_activeConfiguration.provider.fileOnly ||
         !_activeAutoTranscribe ||
         !_activeSttConfigured ||
         _recordWireStatus == 2) {
@@ -1205,13 +1224,13 @@ class RecorderController extends ChangeNotifier {
 
   /// Prefer PCM WS when decode works; false after hard stream failure → Ogg batch.
   bool get _streamSttPreferred =>
-      _activeConfiguration.provider != SttProvider.moss &&
+      !_activeConfiguration.provider.fileOnly &&
       _preferStreamStt &&
       _opusPcm.isReady &&
       _activeAutoTranscribe;
 
   Future<bool> _ensureStreamStt() async {
-    if (_activeConfiguration.provider == SttProvider.moss ||
+    if (_activeConfiguration.provider.fileOnly ||
         !_activeAutoTranscribe ||
         !_activeSttConfigured ||
         !_preferStreamStt) {
@@ -1630,6 +1649,23 @@ class RecorderController extends ChangeNotifier {
     unawaited(_persistSettings());
   }
 
+  String? get xfyunCredentialStored => _xfyunStt.credentialOverride;
+  String? get volcCredentialStored => _volcStt.credentialOverride;
+
+  void setXfyunCredential(String? value) {
+    final t = value?.trim();
+    _xfyunStt.credentialOverride = (t == null || t.isEmpty) ? null : t;
+    notifyListeners();
+    unawaited(_persistSettings());
+  }
+
+  void setVolcCredential(String? value) {
+    final t = value?.trim();
+    _volcStt.credentialOverride = (t == null || t.isEmpty) ? null : t;
+    notifyListeners();
+    unawaited(_persistSettings());
+  }
+
   /// Saved / override keys for Settings text fields (not env-only secrets).
   String? get sonioxApiKeyStored => _sonioxStt.apiKeyOverride;
 
@@ -1647,8 +1683,7 @@ class RecorderController extends ChangeNotifier {
   }
 
   void setSttMode(SttDisplayMode mode) {
-    if (speechProvider == SttProvider.moss &&
-        mode != SttDisplayMode.transcription) {
+    if (speechProvider.fileOnly && mode != SttDisplayMode.transcription) {
       return;
     }
     if (mode != SttDisplayMode.transcription &&
@@ -2059,6 +2094,20 @@ class RecorderController extends ChangeNotifier {
         onProgress: onProgress,
       );
     }
+    if (config.provider == SttProvider.xfyun) {
+      return _xfyunStt.transcribePath(
+        path,
+        credentialValue: config.xfyunKey,
+        onProgress: onProgress,
+      );
+    }
+    if (config.provider == SttProvider.volc) {
+      return _volcStt.transcribePath(
+        path,
+        credentialValue: config.volcKey,
+        onProgress: onProgress,
+      );
+    }
     return _sonioxStt.transcribePath(
       path,
       language: config.sourceLanguage == 'auto' ? null : config.sourceLanguage,
@@ -2249,6 +2298,8 @@ class RecorderController extends ChangeNotifier {
   int pcmFramesDecoded = 0;
   final SonioxSttService _sonioxStt;
   final MossSttService _mossStt;
+  final XfyunSttService _xfyunStt;
+  final VolcSttService _volcStt;
   late final MossJobQueue _mossJobs;
   final AppleSpeechService _appleSpeech;
   SttProvider speechProvider = SttProvider.soniox;
@@ -4435,6 +4486,8 @@ class _SpeechConfiguration {
     required this.appleTranslationReady,
     this.sonioxKey,
     this.mossKey,
+    this.xfyunKey,
+    this.volcKey,
   });
   final SttProvider provider;
   final String sourceLanguage;
@@ -4447,6 +4500,8 @@ class _SpeechConfiguration {
   final bool appleTranslationReady;
   final String? sonioxKey;
   final String? mossKey;
+  final String? xfyunKey;
+  final String? volcKey;
 
   _SpeechConfiguration withSourceLanguage(String source) =>
       _SpeechConfiguration(
@@ -4461,6 +4516,8 @@ class _SpeechConfiguration {
         appleTranslationReady: appleTranslationReady,
         sonioxKey: sonioxKey,
         mossKey: mossKey,
+        xfyunKey: xfyunKey,
+        volcKey: volcKey,
       );
 }
 
