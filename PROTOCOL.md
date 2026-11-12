@@ -256,6 +256,47 @@ When `realtimeFlag == 1`, transfer prefers non-SPP path (`preferSpp=false`).
 
 Type `0x1B` / id `0x0E`: offline file list **with end time** per entry.
 
+#### Windows BLE observations (2026-11-12)
+
+The following was verified with one Feishu-edition D3200 reporting main firmware
+`04.73`, using Windows 11 x64 and Bleak. These are observations for that device
+and firmware, not a guarantee for other firmware or account-binding states.
+
+- GATT device information (`01/01`) was accessible before unbinding from Feishu.
+  Realtime audio, completed-file export, and deletion were tested after unbinding.
+  The Windows client used `pair=False` and did not send `0B/87` binding commands
+  or provide a Feishu account token. Account binding, OS pairing, and an active
+  phone BLE connection should therefore be distinguished when troubleshooting.
+- Completed-file export worked over BLE using `2E/01` for the encryption session
+  and `1A/07` with offset zero and `realtimeFlag=0`, without requesting SoftAP or
+  opening an SPP connection. The device supplied `1A/07`, `1A/08` slices, and a
+  `1A/0A` completion notification.
+- While another recording was active, a historical-file request returned a
+  `1A/07` head whose file ID did not match the requested ID. The client rejected
+  it and did not delete anything. After recording stopped, the same completed
+  file exported successfully. Validate the head's file ID before accepting its
+  key or slices; do not assume that any head received belongs to the request.
+
+The file-list size, transfer-head size, and decrypted payload count differed:
+
+| Decoded frames | `1B/0E` file-list size | `1A/07` head size | PCM duration |
+|---:|---:|---:|---:|
+| 51,629 | 1,032,580 | 8,570,414 | 1,032.58 s |
+| 597 | 11,940 | 99,102 | 11.94 s |
+
+For both recordings, the list size was `frames * 20`, the head size was
+`frames * 166`, and decrypted transport payload was `frames * 160`. Each frame
+decoded to 20 ms of mono PCM at 16 kHz. These counts are different byte domains;
+comparing decrypted byte count directly with the head size yields about 96.4%
+even for a complete transfer. The meaning of the 20-byte listing unit has not
+been established for other firmware or recording modes.
+
+The Windows client required a matching head, verified file-key magic, contiguous
+sequence numbers, an explicit completion notification, and an exact frame-count
+match to the head size before finalizing its WAV. For the 597-frame test, the
+client verified the saved WAV and its hash before sending `1A/10`, then read the
+file list again to confirm that only the requested test file had disappeared.
+
 ### 5.4 Binding — `cmdType = 0x0B`
 
 Source: `BindingEventSendManager`, RX: `BindingMessageDispatch`
