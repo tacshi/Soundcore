@@ -92,3 +92,7 @@ flutter test
 - 设备协议细节（服务/特征 UUID、命令字、加密流程等）见 [`PROTOCOL.md`](PROTOCOL.md)。
 - 请保持蓝牙开启；旧版 Android 扫描需授予定位权限。
 - 录音进行中修改处理服务、模式或语言，将在下次录音生效。已有 Soniox 配置会保留；支持 Apple 处理且未配置 Soniox 的新设置优先选择 Apple。
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源。
