@@ -4241,14 +4241,28 @@ class RecorderController extends ChangeNotifier {
     }
 
     // File list (newest first — fileId is a unix timestamp for D3200).
-    if (p.cmdType == RxCmd.transportType && p.cmdId == RxCmd.fileListId) {
+    final isFileList =
+        (p.cmdType == RxCmd.transportType ||
+            p.cmdType == RxCmd.transportTypeAlt) &&
+        p.cmdId == RxCmd.fileListId;
+    if (isFileList && p.isRejected) {
+      // Keep the previous list: a refusal says nothing about what is stored.
+      _fileListPageTimeout?.cancel();
+      _loadingFileListPages = false;
+      statusMessage = '设备拒绝了录音列表请求';
+      errorMessage = '设备拒绝了录音列表请求，当前固件可能需要官方 App 授权';
+      _completeFileRefresh();
+    } else if (p.cmdType == RxCmd.transportType &&
+        p.cmdId == RxCmd.fileListId) {
       final list = OfflineFileList.parse(p.payload);
       files = _sortFilesNewestFirst(list.files);
       statusMessage = '${files.length} 条录音';
       _kickRealtimeFromFileList(list);
       _scheduleAutoTransferMissing();
     }
-    if (p.cmdType == RxCmd.transportTypeAlt && p.cmdId == RxCmd.fileListId) {
+    if (!p.isRejected &&
+        p.cmdType == RxCmd.transportTypeAlt &&
+        p.cmdId == RxCmd.fileListId) {
       final list = OfflineFileList.parse(p.payload, withEndTime: true);
       _handleFileListPage(list);
     }

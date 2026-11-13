@@ -142,6 +142,19 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 500));
     expect(ble.downloads, isEmpty);
   });
+
+  test('refused file list reports an error and keeps the known list', () async {
+    controller.autoRealtime = false;
+    await controller.listFiles();
+    ble.filePage([103, 102]);
+    await _until(() => controller.files.length == 2);
+
+    await controller.listFiles();
+    ble.refuseFileList();
+    await _until(() => controller.errorMessage != null);
+
+    expect(controller.files.map((f) => f.fileId), [103, 102]);
+  });
 }
 
 Future<void> _until(bool Function() ready) async {
@@ -180,6 +193,17 @@ class _Ble extends BleService {
       ),
     );
   }
+
+  // Firmware 03.56 refusal: success status byte, lone FF payload.
+  void refuseFileList() => _packets.add(
+    DecodedPacket(
+      raw: Uint8List(0),
+      statusByte: 1,
+      cmdType: 0x1B,
+      cmdId: 0x0E,
+      payload: Uint8List.fromList(const [0xFF]),
+    ),
+  );
 
   void finish() {
     final raw = Uint8List(175)..fillRange(14, 174, 1);
