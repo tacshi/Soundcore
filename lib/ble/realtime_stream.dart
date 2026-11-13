@@ -167,6 +167,17 @@ class RealtimeBleStream {
     if (_fileId == null || _sink == null) return;
 
     if (pkt.cmdId == RxCmd.fileHeadId) {
+      if (pkt.isRejected) {
+        _log('device rejected realtime request for $_fileId');
+        unawaited(
+          _finalize(
+            keepActive: false,
+            reason: 'rejected',
+            emptyMessage: '设备拒绝了实时传输请求',
+          ),
+        );
+        return;
+      }
       final secret = AudioFileSecretKey.parseFrame(pkt.raw);
       if (secret != null) {
         _decryptOn = crypto.initFileDecrypt(
@@ -247,11 +258,16 @@ class RealtimeBleStream {
   Future<String?> _finalize({
     required bool keepActive,
     required String reason,
+    String emptyMessage = '',
   }) {
     final inFlight = _finalizeInFlight;
     if (inFlight != null) return inFlight;
 
-    final future = _finalizeOnce(keepActive: keepActive, reason: reason);
+    final future = _finalizeOnce(
+      keepActive: keepActive,
+      reason: reason,
+      emptyMessage: emptyMessage,
+    );
     _finalizeInFlight = future;
     return future.whenComplete(() {
       if (identical(_finalizeInFlight, future)) {
@@ -263,6 +279,7 @@ class RealtimeBleStream {
   Future<String?> _finalizeOnce({
     required bool keepActive,
     required String reason,
+    required String emptyMessage,
   }) async {
     _idleFinalizeTimer?.cancel();
     final path = _path;
@@ -294,8 +311,23 @@ class RealtimeBleStream {
       );
       return path;
     }
-    _emit(const RealtimeStreamState(active: false, message: ''));
+    if (path != null) await _deleteIfEmpty(path);
+    _emit(RealtimeStreamState(active: false, message: emptyMessage));
     return null;
+  }
+
+  /// A session that never received audio must not leave a 0-byte export
+  /// behind; it would show up as an unplayable recording.
+  Future<void> _deleteIfEmpty(String path) async {
+    try {
+      final file = File(path);
+      if (await file.exists() && await file.length() == 0) {
+        await file.delete();
+        _log('removed empty $path');
+      }
+    } catch (e) {
+      _log('could not remove empty $path: $e');
+    }
   }
 
   Future<String?> stop() => _finalize(keepActive: false, reason: 'stop');

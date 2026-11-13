@@ -107,7 +107,12 @@ class DecodedPacket {
 
   int get successFlag => statusByte & 0x0F;
   int get highNibble => (statusByte & 0xF0) >> 4;
-  bool get isSuccess => successFlag == 1 || statusByte == 1;
+
+  /// Firmware 03.56 refuses requests with a lone `FF` payload while the status
+  /// byte still reads success, so the payload is the only sign of refusal.
+  bool get isRejected => payload.length == 1 && payload[0] == 0xFF;
+
+  bool get isSuccess => !isRejected && (successFlag == 1 || statusByte == 1);
 
   factory DecodedPacket.fromBytes(List<int> bytes) {
     final raw = Uint8List.fromList(bytes);
