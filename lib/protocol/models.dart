@@ -316,12 +316,31 @@ class OfflineFileEntry {
     this.endTime,
   });
 
+  /// Each recording frame is 20 ms of audio. The file list reports 20 units
+  /// per frame, the `1A/07` head reports 166 transport bytes per frame, and
+  /// each frame carries 160 bytes of decrypted payload.
+  static const frameDurationMs = 20;
+  static const listUnitsPerFrame = 20;
+  static const transportBytesPerFrame = 166;
+  static const payloadBytesPerFrame = 160;
+
+  /// Converts a `1A/07` head size (transport bytes) to decrypted payload bytes.
+  static int payloadBytesForHeadSize(int headSize) =>
+      headSize ~/ transportBytesPerFrame * payloadBytesPerFrame;
+
   final int fileId;
+
+  /// Raw size value from the device file list. It is not a byte count:
+  /// the device reports [listUnitsPerFrame] per frame (the duration in ms).
   final int sizeBytes;
   final int? endTime;
 
-  int get estimatedDurationMs =>
-      sizeBytes > 0 ? ((sizeBytes / 20) * 166).round() : 0;
+  int get frameCount => sizeBytes > 0 ? sizeBytes ~/ listUnitsPerFrame : 0;
+
+  int get durationMs => frameCount * frameDurationMs;
+
+  /// Decrypted bytes expected from a complete transfer.
+  int get payloadBytes => frameCount * payloadBytesPerFrame;
 
   DateTime? get fileIdAsDate {
     if (fileId > 1e9 && fileId < 2e10) {
@@ -339,11 +358,12 @@ class OfflineFileEntry {
   }
 
   String get sizeLabel {
-    if (sizeBytes < 1024) return '$sizeBytes B';
-    if (sizeBytes < 1024 * 1024) {
-      return '${(sizeBytes / 1024).toStringAsFixed(1)} KB';
+    final bytes = payloadBytes;
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} KB';
     }
-    return '${(sizeBytes / (1024 * 1024)).toStringAsFixed(2)} MB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MB';
   }
 
   static String _p(int n) => n.toString().padLeft(2, '0');

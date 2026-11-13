@@ -223,11 +223,7 @@ class WifiExportService {
       ..set('Sec-WebSocket-Key', key, preserveHeaderCase: true)
       ..set('Sec-WebSocket-Version', '13', preserveHeaderCase: true)
       ..set('Accept-Encoding', 'gzip', preserveHeaderCase: true)
-      ..set(
-        'User-Agent',
-        'okhttp/3.12.13.18',
-        preserveHeaderCase: true,
-      );
+      ..set('User-Agent', 'okhttp/3.12.13.18', preserveHeaderCase: true);
 
     final response = await request.close();
     if (response.statusCode != HttpStatus.switchingProtocols ||
@@ -284,6 +280,8 @@ class WifiExportService {
   bool _cancelled = false;
   Completer<void> _cancelSignal = Completer<void>();
   String? _activeFileId;
+  int? _requestedFileId;
+  int? _mismatchedHeadId;
   bool _decryptEnabled = false;
   int _decryptedChunks = 0;
   int _rawFallbackChunks = 0;
@@ -438,7 +436,7 @@ class WifiExportService {
             currentFileIndex: i,
             totalFiles: files.length,
             bytesReceived: 0,
-            bytesExpected: f.sizeBytes,
+            bytesExpected: f.payloadBytes,
           ),
         );
         final path = await _transferOne(f, outDir);
@@ -449,7 +447,7 @@ class WifiExportService {
               savedPaths: List.unmodifiable(saved),
               message: '已保存 ${p.basename(path)}',
               currentFileIndex: i + 1,
-              bytesReceived: f.sizeBytes,
+              bytesReceived: f.payloadBytes,
             ),
           );
         }
@@ -670,16 +668,31 @@ class WifiExportService {
       return;
     }
 
+    if (_mismatchedHeadId != null) return;
+
     if (pkt.cmdId == RxCmd.fileHeadId) {
       final head = FileHeadInfo.parse(pkt);
       _log('File head: $head');
+      final requested = _requestedFileId;
+      if (requested != null &&
+          head.errorCode != -1 &&
+          head.fileId != requested) {
+        // Another file's head (seen while a recording is active): do not take
+        // its key or slices for the requested file.
+        _mismatchedHeadId = head.fileId;
+        _log('File head id ${head.fileId} does not match $requested');
+        if (!(_fileHead?.isCompleted ?? true)) {
+          _fileHead!.complete(head);
+        }
+        return;
+      }
       _setupDecryptor(head, pkt.raw);
       if (!(_fileHead?.isCompleted ?? true)) {
         _fileHead!.complete(head);
       }
       if (head.fileSize > 0) {
-        _expectedSize = head.fileSize;
-        _emit(_progress.copyWith(bytesExpected: head.fileSize));
+        _expectedSize = OfflineFileEntry.payloadBytesForHeadSize(head.fileSize);
+        _emit(_progress.copyWith(bytesExpected: _expectedSize));
       }
       return;
     }
@@ -777,7 +790,9 @@ class WifiExportService {
     final ioFile = File(path);
     _fileSink = ioFile.openWrite();
     _sliceBytes = 0;
-    _expectedSize = file.sizeBytes;
+    _expectedSize = file.payloadBytes;
+    _requestedFileId = file.fileId;
+    _mismatchedHeadId = null;
     _fileHead = Completer<FileHeadInfo>();
     _fileDone = Completer<void>();
     _activeFileId = '${file.fileId}';
@@ -800,6 +815,7 @@ class WifiExportService {
         final head = await _fileHead!.future.timeout(
           const Duration(seconds: 20),
         );
+        _throwIfMismatchedHead(file.fileId);
         if (head.errorCode != 0 && head.errorCode != 0xFF) {
           // Feishu treats code 1 = not exists, 2 = local error, 3 = already complete
           if (head.errorCode == 1) {
@@ -809,7 +825,11 @@ class WifiExportService {
             _log('File already complete on device side');
           }
         }
-        if (head.fileSize > 0) _expectedSize = head.fileSize;
+        if (head.fileSize > 0) {
+          _expectedSize = OfflineFileEntry.payloadBytesForHeadSize(
+            head.fileSize,
+          );
+        }
       } on TimeoutException {
         _log('No file header in 20s — still waiting for slices/done');
       }
@@ -819,10 +839,12 @@ class WifiExportService {
         Duration(seconds: 30 + (_expectedSize ~/ 8000).clamp(10, 600)),
       );
       while (!_cancelled && DateTime.now().isBefore(deadline)) {
+        if (_mismatchedHeadId != null) break;
         if (_fileDone?.isCompleted == true) break;
         if (_expectedSize > 0 && _sliceBytes >= _expectedSize) break;
         await Future<void>.delayed(const Duration(milliseconds: 120));
       }
+      _throwIfMismatchedHead(file.fileId);
 
       if (_fileDone?.isCompleted != true &&
           !(_expectedSize > 0 && _sliceBytes >= _expectedSize * 0.95)) {
@@ -869,9 +891,25 @@ class WifiExportService {
         await _fileSink?.close();
       } catch (_) {}
       _fileSink = null;
+      if (_sliceBytes == 0) {
+        try {
+          await ioFile.delete();
+        } catch (_) {}
+      }
       if (_activeFileId != null) crypto.clearFile(_activeFileId!);
       rethrow;
+    } finally {
+      _requestedFileId = null;
     }
+  }
+
+  void _throwIfMismatchedHead(int requestedId) {
+    final headId = _mismatchedHeadId;
+    if (headId == null) return;
+    throw StateError(
+      '设备返回了其他文件 ($headId) 的数据，而不是 $requestedId。'
+      '请在录音结束后重试。',
+    );
   }
 
   /// Feishu hex text for file header request (18 bytes, no separate checksum).

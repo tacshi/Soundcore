@@ -51,8 +51,9 @@ class BleFilePull {
     final sink = File(path).openWrite();
 
     var received = 0;
-    var expected = file.sizeBytes;
+    var expected = file.payloadBytes;
     var decryptOn = false;
+    int? mismatchedHeadId;
     final fileIdStr = '${file.fileId}';
     final head = Completer<void>();
     final done = Completer<void>();
@@ -62,11 +63,24 @@ class BleFilePull {
           pkt.cmdType != RxCmd.transportTypeAlt) {
         return;
       }
+      if (mismatchedHeadId != null) return;
       if (pkt.cmdId == RxCmd.fileHeadId) {
         inactivity.reset();
         final secret = AudioFileSecretKey.parseFrame(pkt.raw);
+        if (secret != null && secret.fileId != file.fileId) {
+          // The device can answer with another file's head (for example while
+          // a recording is active). Its key and slices do not belong here.
+          mismatchedHeadId = secret.fileId;
+          _log('head id=${secret.fileId} does not match ${file.fileId}');
+          if (!head.isCompleted) head.complete();
+          return;
+        }
         if (secret != null) {
-          if (secret.fileSize > 0) expected = secret.fileSize;
+          if (secret.fileSize > 0) {
+            expected = OfflineFileEntry.payloadBytesForHeadSize(
+              secret.fileSize,
+            );
+          }
           decryptOn = crypto.initFileDecrypt(
             fileId: fileIdStr,
             encryptedFileKey: secret.encryptedFileKey,
@@ -115,14 +129,17 @@ class BleFilePull {
         _log('no file head yet — waiting for slices');
       }
       if (_cancelled) throw const BleFilePullCancelled();
+      _throwIfMismatchedHead(mismatchedHeadId, file.fileId);
 
       while (!_cancelled && inactivity.elapsed < timeout) {
+        if (mismatchedHeadId != null) break;
         if (done.isCompleted) break;
         if (expected > 0 && received >= expected) break;
         await Future<void>.delayed(const Duration(milliseconds: 80));
       }
 
       if (_cancelled) throw const BleFilePullCancelled();
+      _throwIfMismatchedHead(mismatchedHeadId, file.fileId);
 
       if (expected > 0 && received < expected * 0.95) {
         throw StateError('Incomplete BLE export: $received/$expected bytes');
@@ -156,6 +173,14 @@ class BleFilePull {
       await sub.cancel();
       _cancelCompleter = null;
     }
+  }
+
+  static void _throwIfMismatchedHead(int? headId, int requestedId) {
+    if (headId == null) return;
+    throw StateError(
+      '设备返回了其他文件 ($headId) 的数据，而不是 $requestedId。'
+      '请在录音结束后重试。',
+    );
   }
 
   int _writeSlices(
