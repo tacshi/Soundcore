@@ -119,6 +119,29 @@ void main() {
       expect(ble.downloads, [102, 103]);
     },
   );
+
+  test('a truncated local export is downloaded again', () async {
+    final exports = await Directory(
+      '${directory.path}/AnkerRecorder/exports',
+    ).create(recursive: true);
+    // One 20 ms frame on disk; the device lists 8 frames (160 ms).
+    await File('${exports.path}/101.opus').writeAsBytes(List.filled(160, 0));
+    await controller.listFiles();
+    ble.filePage([101], listSize: 160);
+    await _until(() => ble.downloads.isNotEmpty);
+    expect(ble.downloads, [101]);
+  });
+
+  test('a complete local export is not downloaded again', () async {
+    final exports = await Directory(
+      '${directory.path}/AnkerRecorder/exports',
+    ).create(recursive: true);
+    await File('${exports.path}/101.opus').writeAsBytes(List.filled(1280, 0));
+    await controller.listFiles();
+    ble.filePage([101], listSize: 160);
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    expect(ble.downloads, isEmpty);
+  });
 }
 
 Future<void> _until(bool Function() ready) async {
@@ -138,13 +161,14 @@ class _Ble extends BleService {
   final downloads = <int>[];
   final failDownloads = <int>{};
 
-  void filePage(List<int> ids) {
+  // The list reports 20 units per frame; finish() sends one 160-byte frame.
+  void filePage(List<int> ids, {int listSize = 20}) {
     final data = ByteData(2 + ids.length * 12)
       ..setUint16(0, ids.length, Endian.little);
     for (var i = 0; i < ids.length; i++) {
       data.setUint32(2 + i * 12, ids[i], Endian.little);
       data.setUint32(6 + i * 12, ids[i] + 1, Endian.little);
-      data.setUint32(10 + i * 12, 160, Endian.little);
+      data.setUint32(10 + i * 12, listSize, Endian.little);
     }
     _packets.add(
       DecodedPacket(

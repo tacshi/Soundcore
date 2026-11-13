@@ -3395,9 +3395,13 @@ class RecorderController extends ChangeNotifier {
       try {
         final local = File(path);
         if (!await local.exists()) continue;
-        final size = await local.length();
-        final minimum = (file.sizeBytes * 0.95).floor();
-        if (size > 0 && (file.sizeBytes <= 0 || size >= minimum)) {
+        if (await local.length() <= 0) continue;
+        // The list size is not a byte count, and local exports are WAV or
+        // raw Opus, so compare audio duration rather than file size.
+        final expectedMs = file.durationMs;
+        final duration = expectedMs > 0 ? await AudioDuration.read(path) : null;
+        if (duration == null ||
+            duration.inMilliseconds >= (expectedMs * 0.95).floor()) {
           complete.add(file.fileId);
         }
       } catch (_) {}
