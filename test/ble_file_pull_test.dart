@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -11,6 +12,47 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'completed BLE export preserves only highlight flags as milliseconds',
+    () async {
+      final packets = StreamController<DecodedPacket>();
+      addTearDown(packets.close);
+      final file = OfflineFileEntry(
+        fileId: DateTime.now().microsecondsSinceEpoch,
+        sizeBytes: 14640,
+      );
+      final pull = BleFilePull(
+        packets: packets.stream,
+        write: (_) async {
+          packets.add(_packet(RxCmd.fileHeadId, Uint8List(10)));
+          for (var i = 0; i < 732; i++) {
+            final frame = _sliceFrame(i);
+            frame[13] = switch (i) {
+              0 => 2,
+              460 => 1,
+              731 => 4,
+              _ => 0,
+            };
+            packets.add(_packet(RxCmd.fileSliceId, frame));
+          }
+          packets.add(_packet(RxCmd.fileDoneId, Uint8List(10)));
+        },
+        crypto: DeviceCrypto(),
+      );
+      final path = await pull.pullFile(file);
+      final audio = File(path);
+      final highlights = File(
+        '${audio.parent.path}/${file.fileId}.highlights.json',
+      );
+      addTearDown(() async {
+        await audio.delete();
+        if (await highlights.exists()) await highlights.delete();
+      });
+      expect(await audio.length(), 732 * 160);
+      expect(jsonDecode(await highlights.readAsString()), [9200]);
+    },
+  );
 
   test('active BLE transfer can outlive the inactivity timeout', () async {
     final packets = StreamController<DecodedPacket>();

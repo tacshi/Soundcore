@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../audio/recording_highlights.dart';
 import '../crypto/device_crypto.dart';
 import '../protocol/commands.dart';
 import '../protocol/frame.dart';
@@ -51,6 +53,7 @@ class BleFilePull {
     final sink = File(path).openWrite();
 
     var received = 0;
+    final highlights = <int>[];
     var expected = file.payloadBytes;
     var decryptOn = false;
     int? mismatchedHeadId;
@@ -100,6 +103,8 @@ class BleFilePull {
           sink,
           fileId: fileIdStr,
           decrypt: decryptOn,
+          firstFrame: received ~/ 160,
+          highlights: highlights,
         );
         onProgress?.call(received, expected);
         return;
@@ -145,6 +150,7 @@ class BleFilePull {
         throw StateError('Incomplete BLE export: $received/$expected bytes');
       }
 
+      await sub.cancel();
       await sink.flush();
       await sink.close();
       crypto.clearFile(fileIdStr);
@@ -158,6 +164,7 @@ class BleFilePull {
           'Keep BLE connected and try again.',
         );
       }
+      await _saveHighlights(path, file.fileId, highlights);
       _log('saved $path ($received bytes, decrypt=$decryptOn)');
       return path;
     } catch (e) {
@@ -188,15 +195,22 @@ class BleFilePull {
     IOSink sink, {
     required String fileId,
     required bool decrypt,
+    required int firstFrame,
+    required List<int> highlights,
   }) {
     var written = 0;
     var i = 9;
     while (frame.length - i >= 165) {
       final seq = readU32Le(frame, i);
       i += 4;
-      i += 1; // flags
+      final flags = frame[i++];
       final dataEnd = i + 160;
       if (dataEnd > frame.length) break;
+      // D3200 firmware 04.92 marks double taps with flag 0x01 in
+      // the saved stream. Each Opus frame contributes 20 ms.
+      if (flags == 0x01) {
+        highlights.add((firstFrame + written ~/ 160) * 20);
+      }
       var chunk = Uint8List.fromList(frame.sublist(i, dataEnd));
       i = dataEnd;
       if (i < frame.length) i += 1;
@@ -213,6 +227,29 @@ class BleFilePull {
       written += chunk.length;
     }
     return written;
+  }
+
+  Future<void> _saveHighlights(
+    String path,
+    int fileId,
+    List<int> highlights,
+  ) async {
+    final file = recordingHighlightsFile(path, fileId);
+    try {
+      if (highlights.isEmpty) {
+        if (await file.exists()) await file.delete();
+        return;
+      }
+      final staged = File('${file.path}.tmp');
+      try {
+        await staged.writeAsString(jsonEncode(highlights), flush: true);
+        await staged.rename(file.path);
+      } finally {
+        if (await staged.exists()) await staged.delete();
+      }
+    } on FileSystemException catch (error) {
+      _log('could not save highlights for $fileId: $error');
+    }
   }
 
   Future<Directory> _exportDir() async {

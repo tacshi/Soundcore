@@ -1,15 +1,44 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../audio/recording_highlights.dart';
 import '../../state/recorder_controller.dart';
 import '../../theme/app_theme.dart';
 
 /// Compact play controls for a **local** exported file.
-class InlinePlayer extends StatelessWidget {
+class InlinePlayer extends StatefulWidget {
   const InlinePlayer({super.key, required this.path, this.fileId});
 
   final String path;
   final int? fileId;
+
+  @override
+  State<InlinePlayer> createState() => _InlinePlayerState();
+}
+
+class _InlinePlayerState extends State<InlinePlayer> {
+  Future<List<int>>? _highlights;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHighlights();
+  }
+
+  @override
+  void didUpdateWidget(covariant InlinePlayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.path != widget.path || oldWidget.fileId != widget.fileId) {
+      _loadHighlights();
+    }
+  }
+
+  void _loadHighlights() {
+    final fileId = widget.fileId;
+    _highlights = fileId == null
+        ? null
+        : readRecordingHighlights(widget.path, fileId);
+  }
 
   static String _fmt(Duration d) {
     final total = d.inSeconds.abs();
@@ -25,6 +54,8 @@ class InlinePlayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final path = widget.path;
+    final fileId = widget.fileId;
     final c = context.watch<RecorderController>();
     final loaded = c.playingPath == path;
     final playing = loaded && c.isPlaying;
@@ -36,6 +67,36 @@ class InlinePlayer extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (_highlights != null)
+          FutureBuilder<List<int>>(
+            future: _highlights,
+            builder: (context, snapshot) {
+              final marks = snapshot.data;
+              if (snapshot.connectionState != ConnectionState.done ||
+                  marks == null ||
+                  marks.isEmpty) {
+                return const SizedBox.shrink();
+              }
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    const Text('重点标记'),
+                    for (final offset in marks)
+                      TextButton(
+                        onPressed: canSeek
+                            ? () => c.seekTo(Duration(milliseconds: offset))
+                            : null,
+                        child: Text(
+                          '${_fmt(Duration(milliseconds: offset))}.'
+                          '${(offset % 1000 ~/ 10).toString().padLeft(2, '0')}',
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            },
+          ),
         SliderTheme(
           data: SliderTheme.of(context).copyWith(
             trackHeight: 3,

@@ -19,6 +19,7 @@ import '../audio/audio_duration.dart';
 import '../audio/ogg_opus.dart';
 import '../audio/opus_pcm_decoder.dart';
 import '../audio/opus_wave.dart';
+import '../audio/recording_highlights.dart';
 import '../ble/ble_service.dart';
 import '../ble/ble_file_pull.dart';
 import '../ble/realtime_stream.dart';
@@ -3582,6 +3583,12 @@ class RecorderController extends ChangeNotifier {
           _localDurations.remove(candidate);
         }
         if (id != null) {
+          final highlights = recordingHighlightsFile(path, id);
+          try {
+            if (await highlights.exists()) await highlights.delete();
+          } on FileSystemException catch (error) {
+            debugPrint('[Exports] Could not remove highlights for $id: $error');
+          }
           transcriptsByFileId.remove(id);
           speakerAliasesByFileId.remove(id);
         }
