@@ -354,6 +354,31 @@ Related but **not** bind flags: `resetDevice` (`0x01/0xB8`) clears device state;
 per-file delete is `0x1A/0x10`. DeviceInfo also exposes read-only
 `autoPowerOff*` / `pickupIndicatorLightStatus` with **no** TX setters in this SDK.
 
+#### Firmware 03.56 / 03.66+ BLE Authentication (`0B/03`, `0B/87 → 0B/88`, `0B/8B`)
+
+On newer soundcore Work (D3200) firmware (`03.56`, `03.66`+), commands such as
+`01/A6`, `1A/0E`, `1B/0E`, and `1A/07` return a single `0xFF` payload byte until
+the client authenticates with `0B/8B` using a persistent 32-byte `binding_key`.
+
+| cmdId | Direction | Payload |
+|-------|-----------|---------|
+| `0x03` | TX | `[len_1B] [email_ASCII]` (optional account email before `0B/8B`) |
+| `0x87` | TX | `[0x01] [len_accountId_1B] [accountId_ASCII_40B] [timestamp_u32_LE] [0x41] [binding_pubkey_65B]` |
+| `0x88` | RX | `[0x01=flag] [0x41] [device_binding_pubkey_65B] [0x20] [shared_secret_32B]` |
+| `0x8B` | TX | `[0x2C] [AES-256-CTR(binding_key, nonce, accountId_40B \|\| ts_u32_LE)] [0x10] [nonce_16B]` (62 B) |
+| `0x8B` | RX | 1-byte result: `0x00` OK, `0xFF` bad key / clock skew, `0xFE` error, `0xFD` no binding key |
+
+Key derivation (identical HKDF parameters to `2E/01`):
+
+```text
+binding_key = HKDF-SHA256(shared_secret_from_0B88, salt={0x01,0x02,0x03}, info={0x01,0x02,0x03}, length=32)
+```
+
+The `binding_key` is persistent across sessions until the device is unbound or
+re-bound. Clients can either perform `0B/87 → 0B/88` directly on an unbound
+device or extract `accountId` (`0B/87`) and `shared_secret` (`0B/88`) from an
+Android `btsnoop_hci.log` captured while pairing with the official app.
+
 ### 5.5 More settings — `cmdType = 0x10`
 
 | cmdId | Name | Payload |

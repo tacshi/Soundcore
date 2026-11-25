@@ -1,6 +1,8 @@
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../crypto/device_crypto.dart';
 import '../../state/recorder_controller.dart';
 import '../../theme/app_theme.dart';
 import '../widgets/scan_sheet.dart';
@@ -231,6 +233,10 @@ class DeviceScreen extends StatelessWidget {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 12),
+                  const Divider(),
+                  const SizedBox(height: 10),
+                  _FirmwareAuthPanel(controller: c),
                 ],
               ),
             ),
@@ -307,6 +313,299 @@ class DeviceScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+class _FirmwareAuthPanel extends StatelessWidget {
+  const _FirmwareAuthPanel({required this.controller});
+
+  final RecorderController controller;
+
+  (String, Color) _statusBadge() {
+    switch (controller.authState) {
+      case DeviceAuthState.authenticated:
+        return ('已认证', AppColors.mint);
+      case DeviceAuthState.authenticating:
+        return ('认证中…', AppColors.accent);
+      case DeviceAuthState.noBindingKey:
+        return ('设备无密钥', AppColors.amber);
+      case DeviceAuthState.failed:
+        return ('认证失败', AppColors.coral);
+      case DeviceAuthState.unknown:
+        return (
+          controller.hasAuthCredentials ? '已保存密钥' : '未配置密钥',
+          controller.hasAuthCredentials ? AppColors.accent : AppColors.textMuted,
+        );
+      case DeviceAuthState.unconfigured:
+        return ('未配置密钥', AppColors.textMuted);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = controller;
+    final (badgeLabel, badgeColor) = _statusBadge();
+    final busy = c.phase == AppPhase.busy;
+
+    return Column(
+      key: const ValueKey('device-auth-panel'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                '固件 03.56+ 认证（0B/8B）',
+                style: TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            StatusPill(label: badgeLabel, color: badgeColor),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          c.hasAuthCredentials
+              ? 'Account ID: ${_maskId(c.authCredentials!.accountId)}'
+              : '新固件需要绑定密钥完成 0B/8B 认证；未绑定官方 App 可直接密钥绑定，需与官方 App 共存可导入 btsnoop 或密钥。',
+          style: const TextStyle(
+            color: AppColors.textSecondary,
+            fontSize: 12,
+            height: 1.35,
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: AccentButton(
+                label: '密钥绑定',
+                icon: Icons.vpn_key_rounded,
+                filled: !c.hasAuthCredentials,
+                onPressed: busy ? null : () => c.bindDeviceWithKey(),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: AccentButton(
+                label: '导入密钥',
+                icon: Icons.upload_file_rounded,
+                filled: false,
+                onPressed: busy ? null : () => _showAuthImportDialog(context, c),
+              ),
+            ),
+          ],
+        ),
+        if (c.hasAuthCredentials) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: AccentButton(
+                  label: '重新认证',
+                  icon: Icons.verified_user_outlined,
+                  filled: false,
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          final ok = await c.authenticateSession();
+                          if (ok) {
+                            await c.syncTime();
+                            await c.listFiles();
+                          }
+                        },
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: AccentButton(
+                  label: '清除密钥',
+                  icon: Icons.delete_outline_rounded,
+                  filled: false,
+                  color: AppColors.textSecondary,
+                  onPressed: busy ? null : () => c.clearAuthCredentials(),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
+    );
+  }
+
+  static String _maskId(String id) {
+    if (id.length <= 12) return id;
+    return '${id.substring(0, 6)}…${id.substring(id.length - 6)}';
+  }
+}
+
+Future<void> _showAuthImportDialog(
+  BuildContext context,
+  RecorderController controller,
+) async {
+  final existing = controller.authCredentials;
+  final accountCtrl = TextEditingController(text: existing?.accountId ?? '');
+  final keyCtrl = TextEditingController(text: existing?.bindingKeyHex ?? '');
+  final emailCtrl = TextEditingController(text: existing?.email ?? '');
+  var inputIsSharedSecret = false;
+  String? formError;
+
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setState) => AlertDialog(
+        backgroundColor: AppColors.bgCard,
+        title: const Text('导入固件绑定密钥'),
+        content: SingleChildScrollView(
+          child: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  '可从 Android 的 btsnoop_hci.log 自动提取 0B/87 账号 ID 与 0B/88 共享密钥，或手动填入十六进制密钥。',
+                  style: TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                AccentButton(
+                  label: '从 btsnoop_hci.log 提取',
+                  icon: Icons.folder_open_rounded,
+                  filled: false,
+                  onPressed: () async {
+                    try {
+                      final file = await openFile();
+                      if (file == null) return;
+                      final bytes = await file.readAsBytes();
+                      final extracted = controller.parseBtsnoopBytes(bytes);
+                      if (extracted.accountId == null &&
+                          extracted.bindingKey == null) {
+                        setState(() {
+                          formError = '未在文件中找到 0B/87 或 0B/88 绑定帧';
+                        });
+                        return;
+                      }
+                      setState(() {
+                        if (extracted.accountId != null) {
+                          accountCtrl.text = extracted.accountId!;
+                        }
+                        if (extracted.bindingKey != null) {
+                          keyCtrl.text = DeviceCrypto.toHex(
+                            extracted.bindingKey!,
+                          );
+                          inputIsSharedSecret = false;
+                        }
+                        if (extracted.email != null) {
+                          emailCtrl.text = extracted.email!;
+                        }
+                        formError = extracted.isComplete
+                            ? null
+                            : '仅提取到部分信息，请补全剩余字段';
+                      });
+                    } catch (e) {
+                      setState(() => formError = '读取文件失败：$e');
+                    }
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: accountCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Account ID（40 位十六进制）',
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: keyCtrl,
+                  decoration: InputDecoration(
+                    labelText: inputIsSharedSecret
+                        ? '0B/88 Shared Secret（64 位十六进制）'
+                        : 'Binding Key（64 位十六进制）',
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                CheckboxListTile(
+                  value: inputIsSharedSecret,
+                  onChanged: (v) =>
+                      setState(() => inputIsSharedSecret = v == true),
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  controlAffinity: ListTileControlAffinity.leading,
+                  title: const Text(
+                    '输入的是 0B/88 原始 shared_secret（自动 HKDF 派生）',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+                TextField(
+                  controller: emailCtrl,
+                  decoration: const InputDecoration(
+                    labelText: '账号邮箱（可选，用于 0B/03）',
+                    isDense: true,
+                  ),
+                ),
+                if (formError != null) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    formError!,
+                    style: const TextStyle(
+                      color: AppColors.coral,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final accountId = accountCtrl.text.trim();
+              final parsed = DeviceCrypto.parseHex(keyCtrl.text);
+              if (accountId.isEmpty) {
+                setState(() => formError = '请填写 Account ID');
+                return;
+              }
+              if (parsed == null || parsed.length != 32) {
+                setState(() => formError = '密钥必须是 32 字节（64 位十六进制）');
+                return;
+              }
+              final email = emailCtrl.text.trim();
+              final creds = inputIsSharedSecret
+                  ? DeviceAuthCredentials.fromSharedSecret(
+                      accountId: accountId,
+                      sharedSecret: parsed,
+                      email: email.isEmpty ? null : email,
+                    )
+                  : DeviceAuthCredentials(
+                      accountId: accountId,
+                      bindingKeyHex: DeviceCrypto.toHex(parsed),
+                      email: email.isEmpty ? null : email,
+                    );
+              Navigator.pop(ctx);
+              await controller.saveAuthCredentials(creds);
+            },
+            child: const Text('保存并认证'),
+          ),
+        ],
+      ),
+    ),
+  );
+  accountCtrl.dispose();
+  keyCtrl.dispose();
+  emailCtrl.dispose();
 }
 
 class _DeviceSection extends StatelessWidget {

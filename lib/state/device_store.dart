@@ -5,7 +5,58 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../crypto/device_crypto.dart';
 import '../protocol/models.dart';
+
+/// Persistent BLE authentication credentials for firmware 03.56 / 03.66+
+/// (`0B/03` optional email + `0B/8B` AES-256-CTR auth with HKDF binding key).
+class DeviceAuthCredentials {
+  const DeviceAuthCredentials({
+    required this.accountId,
+    required this.bindingKeyHex,
+    this.email,
+  });
+
+  final String accountId;
+  final String bindingKeyHex;
+  final String? email;
+
+  Uint8List? get bindingKey => DeviceCrypto.parseHex(bindingKeyHex);
+
+  bool get isValid =>
+      accountId.trim().isNotEmpty && (bindingKey?.length == 32);
+
+  factory DeviceAuthCredentials.fromSharedSecret({
+    required String accountId,
+    required Uint8List sharedSecret,
+    String? email,
+  }) {
+    final key = DeviceCrypto.deriveBindingKey(sharedSecret);
+    return DeviceAuthCredentials(
+      accountId: accountId.trim(),
+      bindingKeyHex: DeviceCrypto.toHex(key),
+      email: email?.trim().isEmpty == true ? null : email?.trim(),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'accountId': accountId.trim(),
+    'bindingKeyHex': bindingKeyHex.trim().toLowerCase(),
+    if (email != null && email!.trim().isNotEmpty) 'email': email!.trim(),
+  };
+
+  static DeviceAuthCredentials? fromJson(Map<String, dynamic> map) {
+    final accountId = (map['accountId'] as String?)?.trim() ?? '';
+    final bindingKeyHex = (map['bindingKeyHex'] as String?)?.trim() ?? '';
+    final email = (map['email'] as String?)?.trim();
+    final creds = DeviceAuthCredentials(
+      accountId: accountId,
+      bindingKeyHex: bindingKeyHex,
+      email: email == null || email.isEmpty ? null : email,
+    );
+    return creds.isValid ? creds : null;
+  }
+}
 
 typedef PersistedDeviceState = ({
   bool bound,
@@ -21,8 +72,9 @@ class DeviceStore {
   DeviceStore._();
 
   static const _fileName = 'bound_device.json';
+  static const _authFileName = 'device_auth.json';
 
-  static Future<File> _file() async {
+  static Future<File> _file([String name = _fileName]) async {
     Directory base;
     try {
       base = await getApplicationDocumentsDirectory();
@@ -31,7 +83,7 @@ class DeviceStore {
     }
     final dir = Directory(p.join(base.path, 'AnkerRecorder'));
     if (!await dir.exists()) await dir.create(recursive: true);
-    return File(p.join(dir.path, _fileName));
+    return File(p.join(dir.path, name));
   }
 
   static Future<void> save({
@@ -134,4 +186,39 @@ class DeviceStore {
       debugPrint('[DeviceStore] clear failed: $e');
     }
   }
+
+  static Future<void> saveAuth(DeviceAuthCredentials? auth) async {
+    try {
+      final f = await _file(_authFileName);
+      if (auth == null || !auth.isValid) {
+        if (await f.exists()) await f.delete();
+        debugPrint('[DeviceStore] auth cleared');
+        return;
+      }
+      final map = <String, dynamic>{
+        ...auth.toJson(),
+        'savedAt': DateTime.now().toIso8601String(),
+      };
+      await f.writeAsString(const JsonEncoder.withIndent('  ').convert(map));
+      debugPrint('[DeviceStore] auth saved accountId=${auth.accountId}');
+    } catch (e) {
+      debugPrint('[DeviceStore] saveAuth failed: $e');
+    }
+  }
+
+  static Future<DeviceAuthCredentials?> loadAuth() async {
+    try {
+      final f = await _file(_authFileName);
+      if (!await f.exists()) return null;
+      final map = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+      final auth = DeviceAuthCredentials.fromJson(map);
+      debugPrint('[DeviceStore] auth loaded=${auth != null}');
+      return auth;
+    } catch (e) {
+      debugPrint('[DeviceStore] loadAuth failed: $e');
+      return null;
+    }
+  }
+
+  static Future<void> clearAuth() => saveAuth(null);
 }

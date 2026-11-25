@@ -22,6 +22,7 @@ import '../audio/opus_wave.dart';
 import '../ble/ble_service.dart';
 import '../ble/ble_file_pull.dart';
 import '../ble/realtime_stream.dart';
+import '../crypto/btsnoop_parser.dart';
 import '../crypto/device_crypto.dart';
 import '../platform/background_sync_service.dart';
 import '../protocol/commands.dart';
@@ -35,10 +36,21 @@ import 'transcript_store.dart';
 import 'recording.dart';
 import 'moss_jobs.dart';
 
+export 'device_store.dart' show DeviceAuthCredentials;
+export '../crypto/btsnoop_parser.dart' show ExtractedBindingCredentials;
 export 'recording.dart';
 export '../ai/speech_provider.dart';
 
 enum AppPhase { idle, scanning, connecting, ready, busy }
+
+enum DeviceAuthState {
+  unknown,
+  unconfigured,
+  authenticating,
+  authenticated,
+  failed,
+  noBindingKey,
+}
 
 class RecorderController extends ChangeNotifier {
   static const _bleScanTimeout = Duration(seconds: 30);
@@ -62,7 +74,8 @@ class RecorderController extends ChangeNotifier {
        _appleSpeech = appleSpeech ?? AppleSpeechService(),
        _sonioxStt = sonioxSpeech ?? SonioxSttService(),
        _mossStt = mossSpeech ?? MossSttService(),
-       _persistedDeviceLoader = persistedDeviceLoader ?? DeviceStore.load {
+       _persistedDeviceLoader = persistedDeviceLoader ?? DeviceStore.load,
+       _persistAuth = loadPersistedState {
     _subs.add(
       _ble.scanResults.listen((list) {
         devices = list;
@@ -125,7 +138,9 @@ class RecorderController extends ChangeNotifier {
           if (!wifiHandoff) {
             encryptReady = false;
             _crypto.resetSession();
+            _crypto.clearBindSession();
             _encryptCompleter = null;
+            _resetAuthSessionState();
           }
           _stopBatteryPoll();
           _fileListPageTimeout?.cancel();
@@ -701,6 +716,17 @@ class RecorderController extends ChangeNotifier {
   }
 
   Future<void> _loadPersistedDevice() async {
+    if (_persistAuth) {
+      final savedAuth = await DeviceStore.loadAuth();
+      if (!_disposed && savedAuth != null) {
+        authCredentials = savedAuth;
+        if (authState == DeviceAuthState.unconfigured ||
+            authState == DeviceAuthState.unknown) {
+          authState = DeviceAuthState.unknown;
+        }
+        notifyListeners();
+      }
+    }
     final saved = await _persistedDeviceLoader();
     if (saved.device == null && !saved.bound) return;
     lastKnownDevice = saved.device;
@@ -2285,6 +2311,14 @@ class RecorderController extends ChangeNotifier {
   int _lastSttBytes = 0;
 
   Completer<bool>? _encryptCompleter;
+  Completer<int?>? _authCompleter;
+  Completer<bool>? _bindKeyCompleter;
+  String? _pendingBindEmail;
+  final bool _persistAuth;
+  DeviceAuthCredentials? authCredentials;
+  DeviceAuthState authState = DeviceAuthState.unconfigured;
+  bool get hasAuthCredentials => authCredentials?.isValid == true;
+  bool get authReady => authState == DeviceAuthState.authenticated;
   AppPhase phase = AppPhase.idle;
   bool connected = false;
   List<ScannedDevice> devices = [];
@@ -2612,11 +2646,17 @@ class RecorderController extends ChangeNotifier {
       notifyListeners();
       await Future<void>.delayed(const Duration(milliseconds: 300));
       await refreshInfo();
-      await Future<void>.delayed(const Duration(milliseconds: 400));
-      await syncTime();
       // ECDH encrypt handshake so file exports can be decrypted.
       await Future<void>.delayed(const Duration(milliseconds: 300));
       await establishEncryptSession();
+      // Firmware 03.56 / 03.66+ gates 01/A6, 1A/0E, 1B/0E, and 1A/07 behind
+      // 0B/8B authentication when a binding key is stored.
+      if (hasAuthCredentials) {
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        await authenticateSession();
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await syncTime();
       shortcutResult = await _runPendingRecordingShortcutIfReady();
       if (shortcutResult == false) shortcutFailure = errorMessage;
       _startBatteryPoll();
@@ -2683,6 +2723,8 @@ class RecorderController extends ChangeNotifier {
     _recordWireStatus = 0;
     encryptReady = false;
     _crypto.resetSession();
+    _crypto.clearBindSession();
+    _resetAuthSessionState();
     phase = AppPhase.idle;
     statusMessage = null;
     connected = false;
@@ -2745,6 +2787,154 @@ class RecorderController extends ChangeNotifier {
     } finally {
       _encryptCompleter = null;
     }
+  }
+
+  void _resetAuthSessionState() {
+    if (_authCompleter != null && !_authCompleter!.isCompleted) {
+      _authCompleter!.complete(null);
+    }
+    _authCompleter = null;
+    if (_bindKeyCompleter != null && !_bindKeyCompleter!.isCompleted) {
+      _bindKeyCompleter!.complete(false);
+    }
+    _bindKeyCompleter = null;
+    _pendingBindEmail = null;
+    authState = hasAuthCredentials
+        ? DeviceAuthState.unknown
+        : DeviceAuthState.unconfigured;
+  }
+
+  /// Firmware 03.56 / 03.66+ BLE authentication (`0B/03` optional + `0B/8B`).
+  Future<bool> authenticateSession({
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    if (!_ble.isConnected) return false;
+    final creds = authCredentials;
+    if (creds == null || !creds.isValid) {
+      authState = DeviceAuthState.unconfigured;
+      notifyListeners();
+      return false;
+    }
+    final bindingKey = creds.bindingKey!;
+    final payload = DeviceCrypto.buildAuthPayload(
+      accountId: creds.accountId,
+      bindingKey: bindingKey,
+    );
+    if (payload == null) {
+      authState = DeviceAuthState.failed;
+      errorMessage = '绑定密钥格式无效';
+      notifyListeners();
+      return false;
+    }
+
+    authState = DeviceAuthState.authenticating;
+    statusMessage = '正在进行设备认证…';
+    errorMessage = null;
+    phase = AppPhase.busy;
+    notifyListeners();
+
+    _authCompleter = Completer<int?>();
+    try {
+      final email = creds.email?.trim();
+      if (email != null && email.isNotEmpty) {
+        await _ble.writeCommand(DeviceCommands.sendAccount(email));
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+      }
+      logs = [
+        'AUTH TX 0B/8B ${payload.length}B accountId=${creds.accountId.substring(0, creds.accountId.length < 8 ? creds.accountId.length : 8)}…',
+        ...logs,
+      ].take(80).toList();
+      await _ble.writeCommand(DeviceCommands.authenticate(payload));
+
+      final code = await _authCompleter!.future.timeout(timeout);
+      if (code == 0x00) {
+        authState = DeviceAuthState.authenticated;
+        statusMessage = '设备已认证';
+        errorMessage = null;
+        phase = AppPhase.ready;
+        notifyListeners();
+        return true;
+      }
+      if (code == 0xFD) {
+        authState = DeviceAuthState.noBindingKey;
+        statusMessage = '设备未保存绑定密钥';
+        errorMessage = '设备未保存绑定密钥（0xFD），请在设备页执行密钥绑定';
+      } else if (code == 0xFF) {
+        authState = DeviceAuthState.failed;
+        statusMessage = '设备认证失败';
+        errorMessage = '设备认证被拒绝（0xFF）：绑定密钥不匹配或设备时钟偏差过大';
+      } else {
+        authState = DeviceAuthState.failed;
+        final hex = code == null
+            ? '无响应'
+            : '0x${code.toRadixString(16).padLeft(2, '0').toUpperCase()}';
+        statusMessage = '设备认证失败';
+        errorMessage = '设备认证失败（$hex）';
+      }
+      phase = AppPhase.ready;
+      notifyListeners();
+      return false;
+    } on TimeoutException {
+      authState = DeviceAuthState.failed;
+      statusMessage = '设备认证超时';
+      errorMessage = '设备认证超时，当前固件可能不支持 0B/8B 或连接已中断';
+      phase = AppPhase.ready;
+      notifyListeners();
+      return false;
+    } catch (e) {
+      authState = DeviceAuthState.failed;
+      errorMessage = e.toString();
+      phase = AppPhase.ready;
+      notifyListeners();
+      return false;
+    } finally {
+      _authCompleter = null;
+    }
+  }
+
+  /// Parse Android `btsnoop_hci.log` bytes for `0B/87` account ID, `0B/88`
+  /// shared secret (→ HKDF binding key), and optional `0B/03` email.
+  ExtractedBindingCredentials parseBtsnoopBytes(Uint8List bytes) =>
+      BtsnoopParser.extract(bytes);
+
+  /// Save imported or derived binding credentials and optionally authenticate
+  /// immediately if connected.
+  Future<bool> saveAuthCredentials(
+    DeviceAuthCredentials creds, {
+    bool authenticateNow = true,
+  }) async {
+    if (!creds.isValid) {
+      errorMessage = 'Account ID 或 32 字节绑定密钥格式无效';
+      notifyListeners();
+      return false;
+    }
+    authCredentials = creds;
+    authState = DeviceAuthState.unknown;
+    errorMessage = null;
+    if (_persistAuth) {
+      await DeviceStore.saveAuth(creds);
+    }
+    notifyListeners();
+    if (authenticateNow && _ble.isConnected) {
+      final ok = await authenticateSession();
+      if (ok) {
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+        await syncTime();
+        await listFiles();
+      }
+      return ok;
+    }
+    return true;
+  }
+
+  Future<void> clearAuthCredentials() async {
+    authCredentials = null;
+    authState = DeviceAuthState.unconfigured;
+    if (_persistAuth) {
+      await DeviceStore.clearAuth();
+    }
+    statusMessage = '已清除绑定密钥';
+    notifyListeners();
   }
 
   Future<bool> _sendChecked(List<int> frame, {String? label}) async {
@@ -3804,6 +3994,80 @@ class RecorderController extends ChangeNotifier {
     await _send(DeviceCommands.bind(), label: '正在绑定…');
   }
 
+  /// Firmware 03.56 / 03.66+ extended binding (`0B/87` with accountId +
+  /// timestamp + P-256 public key → `0B/88` with device pubkey + ECDH shared
+  /// secret). Persists the derived `binding_key` and immediately authenticates.
+  Future<bool> bindDeviceWithKey({
+    String? accountId,
+    String? email,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    if (!_ble.isConnected) {
+      errorMessage = '未连接';
+      notifyListeners();
+      return false;
+    }
+    final session = _crypto.startBindSession(
+      accountId: accountId ?? authCredentials?.accountId,
+    );
+    _pendingBindRequest = true;
+    _pendingBindEmail = email?.trim().isEmpty == true
+        ? authCredentials?.email
+        : email?.trim();
+    _bindKeyCompleter = Completer<bool>();
+
+    statusMessage = '正在执行密钥绑定…';
+    errorMessage = null;
+    phase = AppPhase.busy;
+    notifyListeners();
+
+    try {
+      logs = [
+        'BIND TX 0B/87 key-bind id=${session.accountId.substring(0, session.accountId.length < 8 ? session.accountId.length : 8)}… pub=${session.publicKey.length}B',
+        ...logs,
+      ].take(80).toList();
+      await _ble.writeCommand(
+        DeviceCommands.bindWithKey(
+          accountId: session.accountId,
+          publicKey: session.publicKey,
+        ),
+      );
+      final ok = await _bindKeyCompleter!.future.timeout(timeout);
+      phase = AppPhase.ready;
+      if (ok) {
+        statusMessage = '密钥绑定成功，正在认证…';
+        notifyListeners();
+        final authed = await authenticateSession();
+        if (authed) {
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+          await syncTime();
+          await listFiles();
+        }
+        return authed;
+      }
+      statusMessage = '密钥绑定失败';
+      errorMessage ??= '设备拒绝了密钥绑定（若已绑定官方 App，请先在官方 App 解绑，或改用导入绑定密钥）';
+      notifyListeners();
+      return false;
+    } on TimeoutException {
+      _crypto.clearBindSession();
+      phase = AppPhase.ready;
+      statusMessage = '密钥绑定超时';
+      errorMessage = '等待设备 0B/88 响应超时（如设备需要按键确认，请按设备按键后重试）';
+      notifyListeners();
+      return false;
+    } catch (e) {
+      _crypto.clearBindSession();
+      phase = AppPhase.ready;
+      errorMessage = e.toString();
+      notifyListeners();
+      return false;
+    } finally {
+      _bindKeyCompleter = null;
+      _pendingBindEmail = null;
+    }
+  }
+
   /// Unbind with the stock Feishu payload. This preserves recordings and
   /// disconnects BLE after a successful ACK.
   Future<void> unbindDevice() async {
@@ -4250,7 +4514,9 @@ class RecorderController extends ChangeNotifier {
       _fileListPageTimeout?.cancel();
       _loadingFileListPages = false;
       statusMessage = '设备拒绝了录音列表请求';
-      errorMessage = '设备拒绝了录音列表请求，当前固件可能需要官方 App 授权';
+      errorMessage = authReady
+          ? '设备拒绝了录音列表请求，请重新认证或重新连接'
+          : '设备拒绝了录音列表请求，当前固件需要绑定密钥认证（请在「设备」页绑定或导入密钥）';
       _completeFileRefresh();
     } else if (p.cmdType == RxCmd.transportType &&
         p.cmdId == RxCmd.fileListId) {
@@ -4318,11 +4584,22 @@ class RecorderController extends ChangeNotifier {
       }
     }
 
-    // Binding — Feishu BindingMessageDispatch:
+    // Binding & Auth — Feishu BindingMessageDispatch + firmware 03.56+ auth:
+    //  0x03 = account email ACK
     //  0x87 = bind/unbind command result (successFlag low nibble of status)
-    //  0x88 = device confirm after bind (not used for unbind)
+    //  0x88 = device confirm after bind (may contain pubkey + ECDH shared secret)
+    //  0x8B = session auth result (00=ok, FF=bad key/ts, FE=err, FD=no key)
     if (p.cmdType == RxCmd.bindType) {
-      if (p.cmdId == RxCmd.bindResultId) {
+      if (p.cmdId == RxCmd.authResultId) {
+        final code = p.payload.isNotEmpty ? (p.payload[0] & 0xFF) : null;
+        logs = [
+          'AUTH RX 0B/8B code=${code == null ? "empty" : "0x${code.toRadixString(16).padLeft(2, '0').toUpperCase()}"}',
+          ...logs,
+        ].take(80).toList();
+        if (!(_authCompleter?.isCompleted ?? true)) {
+          _authCompleter!.complete(code);
+        }
+      } else if (p.cmdId == RxCmd.bindResultId) {
         final ok = p.isSuccess;
         if (_pendingBindRequest == false) {
           // Unbind ACK
@@ -4348,14 +4625,48 @@ class RecorderController extends ChangeNotifier {
             if (activeDevice != null) lastKnownDevice = activeDevice;
             unawaited(_persistDevice());
             statusMessage = '正在绑定…';
-            _schedulePostBindFileRefresh();
+            if (_bindKeyCompleter == null) {
+              _schedulePostBindFileRefresh();
+            }
           } else {
             statusMessage = '绑定失败';
-            errorMessage = '绑定失败，请重新连接后重试';
+            errorMessage = _bindKeyCompleter != null
+                ? '设备拒绝了密钥绑定（若已绑定官方 App，请先在官方 App 解绑，或改用导入绑定密钥）'
+                : '绑定失败，请重新连接后重试';
+            _crypto.clearBindSession();
+            if (!(_bindKeyCompleter?.isCompleted ?? true)) {
+              _bindKeyCompleter!.complete(false);
+            }
           }
         }
       } else if (p.cmdId == RxCmd.bindConfirmId) {
-        if (p.isSuccess) {
+        final confirm = BindConfirmPayload.parse(p.payload);
+        if (confirm != null) {
+          final result = _crypto.completeBindSession(confirm);
+          if (result != null) {
+            logs = [
+              'BIND RX 0B/88 key derived verified=${result.verified}',
+              ...logs,
+            ].take(80).toList();
+            final creds = DeviceAuthCredentials(
+              accountId: result.accountId,
+              bindingKeyHex: DeviceCrypto.toHex(result.bindingKey),
+              email: _pendingBindEmail,
+            );
+            authCredentials = creds;
+            if (_persistAuth) {
+              unawaited(DeviceStore.saveAuth(creds));
+            }
+            bound = true;
+            if (activeDevice != null) lastKnownDevice = activeDevice;
+            unawaited(_persistDevice());
+            if (!(_bindKeyCompleter?.isCompleted ?? true)) {
+              _bindKeyCompleter!.complete(true);
+            }
+          } else if (!(_bindKeyCompleter?.isCompleted ?? true)) {
+            _bindKeyCompleter!.complete(false);
+          }
+        } else if (p.isSuccess) {
           bound = true;
           if (activeDevice != null) lastKnownDevice = activeDevice;
           unawaited(_persistDevice());
@@ -4364,6 +4675,9 @@ class RecorderController extends ChangeNotifier {
         } else {
           statusMessage = '绑定确认失败';
           errorMessage = '绑定失败，请重新连接后重试';
+          if (!(_bindKeyCompleter?.isCompleted ?? true)) {
+            _bindKeyCompleter!.complete(false);
+          }
         }
       }
     }

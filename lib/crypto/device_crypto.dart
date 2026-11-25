@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:pointycastle/export.dart';
@@ -18,13 +19,72 @@ class DeviceCrypto {
   DeviceCrypto();
 
   static const fileKeyMagic = 'soundcored3200'; // 14 bytes UTF-8
+  static const List<int> hkdfSalt = [1, 2, 3];
+  static const List<int> hkdfInfo = [1, 2, 3];
 
   ECPrivateKey? _privateKey;
   ECPublicKey? _publicKey;
   Uint8List? sessionKey; // 32-byte AES-256 key after handshake
   bool get hasSession => sessionKey != null && sessionKey!.length == 32;
 
+  ECPrivateKey? _pendingBindPrivateKey;
+  String? _pendingBindAccountId;
+
   final Map<String, AesCtrStreamDecrypt> _fileDecryptors = {};
+
+  /// Start a new `0B/87 → 0B/88` binding key exchange.
+  /// Returns the 40-char hex `accountId` and 65-byte uncompressed P-256 public key.
+  ({String accountId, Uint8List publicKey}) startBindSession({
+    String? accountId,
+  }) {
+    final pair = generateKeyPair();
+    final id = (accountId != null && accountId.trim().isNotEmpty)
+        ? accountId.trim()
+        : generateAccountId();
+    _pendingBindPrivateKey = pair.privateKey;
+    _pendingBindAccountId = id;
+    return (accountId: id, publicKey: pair.publicKey);
+  }
+
+  /// Complete an in-flight `0B/87 → 0B/88` binding key exchange and derive the
+  /// persistent 32-byte AES-256 `bindingKey`.
+  ({String accountId, Uint8List bindingKey, bool verified})?
+  completeBindSession(BindConfirmPayload confirm) {
+    final priv = _pendingBindPrivateKey;
+    final id = _pendingBindAccountId;
+    if (priv == null || id == null) return null;
+
+    final expected = computeSharedSecret(priv, confirm.devicePublicKey);
+    final verified =
+        expected != null &&
+        toHex(expected, uppercase: true) ==
+            toHex(confirm.sharedSecret, uppercase: true);
+    final bindingKey = confirm.deriveBindingKey();
+    _pendingBindPrivateKey = null;
+    _pendingBindAccountId = null;
+    return (accountId: id, bindingKey: bindingKey, verified: verified);
+  }
+
+  void clearBindSession() {
+    _pendingBindPrivateKey = null;
+    _pendingBindAccountId = null;
+  }
+
+  /// Generate a fresh secp256r1 keypair and return private key + 65-byte
+  /// uncompressed SEC1 public key.
+  static ({ECPrivateKey privateKey, Uint8List publicKey}) generateKeyPair() {
+    final domain = ECDomainParameters('secp256r1');
+    final secureRandom = _secureRandom();
+    final keyGen = ECKeyGenerator()
+      ..init(
+        ParametersWithRandom(ECKeyGeneratorParameters(domain), secureRandom),
+      );
+    final pair = keyGen.generateKeyPair();
+    return (
+      privateKey: pair.privateKey,
+      publicKey: _encodePublic(pair.publicKey),
+    );
+  }
 
   /// Generate (or re-use) app ECDH keypair. Returns uncompressed public key bytes (65).
   Uint8List ensureKeyPair() {
@@ -41,6 +101,93 @@ class DeviceCrypto {
     _privateKey = pair.privateKey;
     _publicKey = pair.publicKey;
     return _encodePublic(_publicKey!);
+  }
+
+  /// Generate a random 40-character lowercase hex account ID for standalone
+  /// `0B/87` binding.
+  static String generateAccountId() => toHex(randomBytes(20));
+
+  /// Cryptographically secure random bytes.
+  static Uint8List randomBytes(int length) {
+    final r = Random.secure();
+    return Uint8List.fromList(List.generate(length, (_) => r.nextInt(256)));
+  }
+
+  /// Derive the persistent 32-byte AES-256 binding key from the 32-byte raw
+  /// ECDH shared secret returned in `RX 0B/88`.
+  static Uint8List deriveBindingKey(Uint8List sharedSecret) {
+    if (sharedSecret.length != 32) {
+      throw ArgumentError.value(
+        sharedSecret.length,
+        'sharedSecret.length',
+        'Shared secret must be 32 bytes',
+      );
+    }
+    return hkdfSha256(
+      ikm: sharedSecret,
+      salt: Uint8List.fromList(hkdfSalt),
+      info: Uint8List.fromList(hkdfInfo),
+      length: 32,
+    );
+  }
+
+  /// Build the `TX 0B/8B` authentication payload for firmware 03.56 / 03.66+:
+  /// `[len_ct] [AES-256-CTR(bindingKey, nonce, ascii(accountId) || u32_LE(ts))] [len_nonce] [nonce_16B]`.
+  ///
+  /// For a standard 40-byte ASCII hex `accountId`, the resulting payload is 62
+  /// bytes (`0x2C + ct(44) + 0x10 + nonce(16)`).
+  static Uint8List? buildAuthPayload({
+    required String accountId,
+    required Uint8List bindingKey,
+    int? timestampSeconds,
+    Uint8List? nonce,
+  }) {
+    final trimmed = accountId.trim();
+    if (trimmed.isEmpty || bindingKey.length != 32) return null;
+    final idBytes = ascii.encode(trimmed);
+    if (idBytes.length + 4 > 255) return null;
+
+    final iv = nonce ?? randomBytes(16);
+    if (iv.length != 16) return null;
+
+    final ts = timestampSeconds ?? (DateTime.now().millisecondsSinceEpoch ~/ 1000);
+    final plaintext = Uint8List(idBytes.length + 4)
+      ..setRange(0, idBytes.length, idBytes)
+      ..[idBytes.length] = ts & 0xFF
+      ..[idBytes.length + 1] = (ts >> 8) & 0xFF
+      ..[idBytes.length + 2] = (ts >> 16) & 0xFF
+      ..[idBytes.length + 3] = (ts >> 24) & 0xFF;
+
+    final ciphertext = aesCtrDecrypt(data: plaintext, key: bindingKey, iv: iv);
+    if (ciphertext == null) return null;
+
+    final out = BytesBuilder(copy: false)
+      ..addByte(ciphertext.length & 0xFF)
+      ..add(ciphertext)
+      ..addByte(iv.length & 0xFF)
+      ..add(iv);
+    return out.toBytes();
+  }
+
+  /// Parse a hex string (ignoring whitespace, `:`, `-`, and optional `0x`).
+  static Uint8List? parseHex(String input) {
+    var cleaned = input
+        .trim()
+        .replaceAll(RegExp(r'0x', caseSensitive: false), '')
+        .replaceAll(RegExp(r'[\s:\-]+'), '');
+    if (cleaned.isEmpty || cleaned.length.isOdd) return null;
+    if (!RegExp(r'^[0-9a-fA-F]+$').hasMatch(cleaned)) return null;
+    return Uint8List.fromList([
+      for (var i = 0; i < cleaned.length; i += 2)
+        int.parse(cleaned.substring(i, i + 2), radix: 16),
+    ]);
+  }
+
+  static String toHex(List<int> bytes, {bool uppercase = false}) {
+    final hex = bytes
+        .map((b) => (b & 0xFF).toRadixString(16).padLeft(2, '0'))
+        .join();
+    return uppercase ? hex.toUpperCase() : hex;
   }
 
   /// Hex form of app public key (Feishu sends hex→bytes of this).
@@ -94,18 +241,27 @@ class DeviceCrypto {
   }
 
   /// ECDH shared secret = X coordinate of (priv * peerPub), 32 bytes.
-  Uint8List? computeEcdhShared(Uint8List peerPublicUncompressed) {
+  static Uint8List? computeSharedSecret(
+    ECPrivateKey privateKey,
+    Uint8List peerPublicUncompressed,
+  ) {
     try {
       final domain = ECDomainParameters('secp256r1');
       final peer = _decodePublic(domain, peerPublicUncompressed);
-      if (peer == null || _privateKey == null) return null;
-      final agreement = ECDHBasicAgreement()..init(_privateKey!);
+      if (peer == null) return null;
+      final agreement = ECDHBasicAgreement()..init(privateKey);
       final secret = agreement.calculateAgreement(peer);
       return _bigIntToBytes(secret, 32);
     } catch (e) {
       debugPrint('[Crypto] ECDH compute failed: $e');
       return null;
     }
+  }
+
+  /// ECDH shared secret using the current session private key.
+  Uint8List? computeEcdhShared(Uint8List peerPublicUncompressed) {
+    if (_privateKey == null) return null;
+    return computeSharedSecret(_privateKey!, peerPublicUncompressed);
   }
 
   /// initDevDecrypt: unwrap per-file key from header material.
@@ -366,6 +522,45 @@ class AudioFileSecretKey {
       encryptedFileKey: encryptedFileKey,
       sessionNonce: sessionNonce,
       errorCode: err,
+    );
+  }
+}
+
+/// Parsed `RX 0B/88` extended binding confirmation payload (firmware 03.56+):
+/// `[flag(1B)] [0x41] [device_binding_pubkey(65B)] [0x20] [shared_secret(32B)]`.
+class BindConfirmPayload {
+  const BindConfirmPayload({
+    required this.flag,
+    required this.devicePublicKey,
+    required this.sharedSecret,
+  });
+
+  final int flag;
+  final Uint8List devicePublicKey; // 65 bytes uncompressed P-256
+  final Uint8List sharedSecret; // 32 bytes raw ECDH X coordinate
+
+  Uint8List deriveBindingKey() => DeviceCrypto.deriveBindingKey(sharedSecret);
+
+  static BindConfirmPayload? parse(Uint8List payload) {
+    // [flag(1)] [pubLen=0x41(1)] [pub(65)] [secretLen=0x20(1)] [secret(32)] = 100B
+    if (payload.length < 100) return null;
+    final flag = payload[0] & 0xFF;
+    final pubLen = payload[1] & 0xFF;
+    if (pubLen != 0x41) return null;
+    final secretLenOffset = 2 + pubLen;
+    if (payload.length < secretLenOffset + 1) return null;
+    final secretLen = payload[secretLenOffset] & 0xFF;
+    if (secretLen != 0x20) return null;
+    final secretStart = secretLenOffset + 1;
+    if (payload.length < secretStart + secretLen) return null;
+    final devicePub = Uint8List.fromList(payload.sublist(2, 2 + pubLen));
+    final shared = Uint8List.fromList(
+      payload.sublist(secretStart, secretStart + secretLen),
+    );
+    return BindConfirmPayload(
+      flag: flag,
+      devicePublicKey: devicePub,
+      sharedSecret: shared,
     );
   }
 }
