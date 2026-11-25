@@ -104,11 +104,50 @@ class DeviceCommands {
   static Uint8List notifyEncryptPublicKey(List<int> publicKeyBytes) =>
       ProtocolFrame.encode(cmdType: 0x2E, cmdId: 0x01, payload: publicKeyBytes);
 
-  // ── Binding (type 0x0B) ──────────────────────────────────────────────
+  // ── Binding & Auth (type 0x0B) ───────────────────────────────────────
+  /// Send account email before `0B/8B` authentication (firmware 03.56+):
+  /// `[len_1B] [email_ASCII]`.
+  static Uint8List sendAccount(String email) {
+    final bytes = utf8.encode(email.trim());
+    final payload = BytesBuilder(copy: false)
+      ..addByte(bytes.length & 0xFF)
+      ..add(bytes);
+    return ProtocolFrame.encode(
+      cmdType: 0x0B,
+      cmdId: 0x03,
+      payload: payload.toBytes(),
+    );
+  }
+
   /// Feishu/Anker SDK sends `01` to bind and `00` to unbind. Unbind always
   /// uses the stock one-byte payload so recordings remain on the device.
   static Uint8List bind() =>
       ProtocolFrame.encode(cmdType: 0x0B, cmdId: 0x87, payload: const [0x01]);
+
+  /// Extended bind for firmware 03.56 / 03.66+ that establishes the persistent
+  /// ECDH binding key (`0B/87` → `0B/88`):
+  /// `[0x01] [len_accountId] [accountId_ASCII] [timestamp_u32_LE] [0x41] [pubkey_65B]`.
+  static Uint8List bindWithKey({
+    required String accountId,
+    required List<int> publicKey,
+    int? timestampSeconds,
+  }) {
+    final idBytes = ascii.encode(accountId.trim());
+    final ts =
+        timestampSeconds ?? (DateTime.now().millisecondsSinceEpoch ~/ 1000);
+    final payload = BytesBuilder(copy: false)
+      ..addByte(0x01)
+      ..addByte(idBytes.length & 0xFF)
+      ..add(idBytes)
+      ..add(u32Le(ts))
+      ..addByte(publicKey.length & 0xFF)
+      ..add(publicKey);
+    return ProtocolFrame.encode(
+      cmdType: 0x0B,
+      cmdId: 0x87,
+      payload: payload.toBytes(),
+    );
+  }
 
   static Uint8List unbind() =>
       ProtocolFrame.encode(cmdType: 0x0B, cmdId: 0x87, payload: const [0x00]);
@@ -116,6 +155,11 @@ class DeviceCommands {
   /// Raw multi-byte bind/unbind for ad-hoc probes (any payload after op).
   static Uint8List bindRaw(List<int> payload) =>
       ProtocolFrame.encode(cmdType: 0x0B, cmdId: 0x87, payload: payload);
+
+  /// Session authentication (`0B/8B`, firmware 03.56 / 03.66+):
+  /// 62-byte payload `[0x2C] [AES-256-CTR ciphertext(44B)] [0x10] [nonce(16B)]`.
+  static Uint8List authenticate(List<int> authPayload) =>
+      ProtocolFrame.encode(cmdType: 0x0B, cmdId: 0x8B, payload: authPayload);
 
   // ── More settings (type 0x10) ────────────────────────────────────────
   static Uint8List setFindMy(bool enable) => ProtocolFrame.encode(
@@ -153,8 +197,10 @@ class RxCmd {
   static const fileSliceMarkId = 0x12;
 
   static const bindType = 0x0B;
+  static const accountId = 0x03;
   static const bindResultId = 0x87;
   static const bindConfirmId = 0x88;
+  static const authResultId = 0x8B;
 
   static const encryptType = 0x2E;
   static const encryptHandshakeId = 0x01;
