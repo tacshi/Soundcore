@@ -256,6 +256,16 @@ When `realtimeFlag == 1`, transfer prefers non-SPP path (`preferSpp=false`).
 
 Type `0x1B` / id `0x0E`: offline file list **with end time** per entry.
 
+#### Hardware highlights in completed BLE exports
+
+On a Feishu-edition D3200 with firmware `04.92`, a single double tap with
+haptic confirmation produced one slice with flag `0x01` at byte offset 13
+of its `1A/08` frame. It was the 460th slice (zero-based) in a 732-slice,
+14.64-second recording, yielding a highlight at 9.20 seconds. At 20 ms per
+slice, the highlight offset is the zero-based slice index multiplied by
+20 ms. The start flag `0x02` is distinct. A separate notification during
+the gesture was not observed.
+
 #### Windows BLE observations (2026-11-12)
 
 The following was verified with one Feishu-edition D3200 reporting main firmware

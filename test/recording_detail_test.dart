@@ -113,6 +113,36 @@ void main() {
       )
       .first;
 
+  testWidgets('local playback displays the saved hardware highlight', (
+    tester,
+  ) async {
+    final dir = Directory.systemTemp.createTempSync('recording-highlights-');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final path = '${dir.path}/100-meeting.wav';
+    File('${dir.path}/100.highlights.json').writeAsStringSync('[9200]');
+    final reference = RecordingReference(fileId: 100, path: path);
+    final c = _RecordingController()
+      ..views[reference.key] = RecordingViewData(
+        reference: reference,
+        path: path,
+        title: '录音',
+        text: 'Test recording',
+      );
+    addTearDown(c.dispose);
+    await tester.runAsync(() async {
+      await pump(tester, c, RecordingDetailScreen(reference: reference));
+      final player = find.byType(InlinePlayer);
+      final highlights = find.descendant(
+        of: player,
+        matching: find.byType(FutureBuilder<List<int>>),
+      );
+      await tester.widget<FutureBuilder<List<int>>>(highlights).future;
+    });
+    await tester.pumpAndSettle();
+    expect(find.text('重点标记'), findsOneWidget);
+    expect(find.text('00:09.20'), findsOneWidget);
+  });
+
   testWidgets('detail playback stays above the iPhone gesture safe area', (
     tester,
   ) async {
